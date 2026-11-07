@@ -657,7 +657,9 @@ sealed class Hud : Window
     readonly StackPanel playbackSettings = new StackPanel();
     readonly StackPanel appearanceSettings = new StackPanel { Visibility = Visibility.Collapsed };
     readonly Button playbackTab, appearanceTab;
-    readonly Button lockButton, previousButton, playButton, nextButton;
+    readonly Button lockButton, closeButton, settingsButton, previousButton, playButton, nextButton;
+    readonly System.Windows.Shapes.Path playIcon;
+    readonly StackPanel transport;
     readonly Thumb resizeGrip;
     readonly StackPanel plainNavigation;
     readonly TextBlock settingsNotice;
@@ -688,8 +690,9 @@ sealed class Hud : Window
     System.Windows.Forms.NotifyIcon tray;
     System.Windows.Forms.ContextMenuStrip trayMenu;
     System.Drawing.Icon trayIcon;
-    System.Windows.Forms.ToolStripMenuItem trayShow, trayLock, trayPrevious, trayPlay, trayNext;
+    System.Windows.Forms.ToolStripMenuItem trayShow, trayLock, traySettings, trayPrevious, trayPlay, trayNext;
     bool transportBusy;
+    bool? displayedPlaying;
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
@@ -727,15 +730,15 @@ sealed class Hud : Window
 
         var header = new DockPanel { LastChildFill = true };
         layout.Children.Add(header);
-        var close = ButtonFor("×", "隐藏到托盘", 30, 21);
-        close.Click += (sender, args) => Hide();
-        DockPanel.SetDock(close, Dock.Right);
-        header.Children.Add(close);
-        var gear = ButtonFor("⚙", "歌词设置", 30, 18);
-        gear.Margin = new Thickness(0, 0, 6, 0);
-        gear.Click += (sender, args) => ToggleSettings();
-        DockPanel.SetDock(gear, Dock.Right);
-        header.Children.Add(gear);
+        closeButton = ButtonFor("×", "隐藏到托盘", 30, 21);
+        closeButton.Click += (sender, args) => Hide();
+        DockPanel.SetDock(closeButton, Dock.Right);
+        header.Children.Add(closeButton);
+        settingsButton = ButtonFor("⚙", "歌词设置", 30, 18);
+        settingsButton.Margin = new Thickness(0, 0, 6, 0);
+        settingsButton.Click += (sender, args) => ToggleSettings();
+        DockPanel.SetDock(settingsButton, Dock.Right);
+        header.Children.Add(settingsButton);
         lockButton = ButtonFor("🔓", "锁定窗口位置和大小", 30, 14);
         lockButton.FontFamily = new FontFamily("Segoe UI Emoji");
         lockButton.Margin = new Thickness(0, 0, 6, 0);
@@ -794,7 +797,7 @@ sealed class Hud : Window
         next.TextAlignment = TextAlignment.Center;
         Grid.SetRow(next, 2);
         layout.Children.Add(next);
-        var transport = new StackPanel
+        transport = new StackPanel
         {
             Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
@@ -802,6 +805,12 @@ sealed class Hud : Window
         previousButton = ButtonFor("⏮", "上一曲", 36, 16);
         playButton = ButtonFor("▶", "播放", 40, 16);
         nextButton = ButtonFor("⏭", "下一曲", 36, 16);
+        previousButton.Content = TransportIcon("M5,4 L5,18 M17,4 L8,11 L17,18 Z");
+        playIcon = TransportIcon("M7,4 L18,11 L7,18 Z");
+        playButton.Content = playIcon;
+        nextButton.Content = TransportIcon("M17,4 L17,18 M5,4 L14,11 L5,18 Z");
+        System.Windows.Automation.AutomationProperties.SetName(previousButton, "上一曲");
+        System.Windows.Automation.AutomationProperties.SetName(nextButton, "下一曲");
         playButton.Margin = new Thickness(6, 0, 6, 0);
         previousButton.Click += async (sender, args) => await SendPlayback("previous");
         playButton.Click += async (sender, args) => await SendPlayback("play-pause");
@@ -907,12 +916,53 @@ sealed class Hud : Window
 
     static Button ButtonFor(string label, string tip, double width, double size)
     {
+        var surface = new FrameworkElementFactory(typeof(Border));
+        surface.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        surface.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
+        var content = new FrameworkElementFactory(typeof(ContentPresenter));
+        content.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        content.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        surface.AppendChild(content);
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = surface };
+        var hover = new Trigger { Property = IsMouseOverProperty, Value = true };
+        hover.Setters.Add(new Setter(OpacityProperty, 1.0));
+        var pressed = new Trigger { Property = Button.IsPressedProperty, Value = true };
+        pressed.Setters.Add(new Setter(OpacityProperty, 0.55));
+        var disabled = new Trigger { Property = IsEnabledProperty, Value = false };
+        disabled.Setters.Add(new Setter(OpacityProperty, 0.3));
+        template.Triggers.Add(hover);
+        template.Triggers.Add(pressed);
+        template.Triggers.Add(disabled);
         return new Button
         {
             Content = label, FontSize = size, Width = width, Height = 27, Padding = new Thickness(0),
-            BorderThickness = new Thickness(0), Background = Color("#FF2B3540"),
-            Foreground = Color("#FFE0E8F0"), Cursor = Cursors.Hand, ToolTip = tip
+            BorderThickness = new Thickness(0), Background = Brushes.Transparent, Opacity = 0.85,
+            Foreground = Color("#FFE0E8F0"), Cursor = Cursors.Hand, ToolTip = tip,
+            Template = template,
+            Effect = new System.Windows.Media.Effects.DropShadowEffect
+            {
+                BlurRadius = 3, ShadowDepth = 1, Opacity = 0.65
+            }
         };
+    }
+
+    static System.Windows.Shapes.Path TransportIcon(string geometry)
+    {
+        var icon = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse(geometry), Width = 18, Height = 18,
+            Stretch = Stretch.Uniform, StrokeThickness = 1.5,
+            StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round
+        };
+        var foreground = new System.Windows.Data.Binding("Foreground")
+        {
+            RelativeSource = new System.Windows.Data.RelativeSource(
+                System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1)
+        };
+        icon.SetBinding(System.Windows.Shapes.Path.FillProperty, foreground);
+        icon.SetBinding(System.Windows.Shapes.Path.StrokeProperty, foreground);
+        return icon;
     }
 
     void SetupTray()
@@ -932,8 +982,8 @@ sealed class Hud : Window
         trayPrevious.Click += async (sender, args) => await SendPlayback("previous");
         trayPlay.Click += async (sender, args) => await SendPlayback("play-pause");
         trayNext.Click += async (sender, args) => await SendPlayback("next");
-        var settingsItem = new System.Windows.Forms.ToolStripMenuItem("设置");
-        settingsItem.Click += (sender, args) =>
+        traySettings = new System.Windows.Forms.ToolStripMenuItem("设置") { Enabled = !preferences.Locked };
+        traySettings.Click += (sender, args) =>
         {
             ShowFromTray();
             if (settingsFrame.Visibility != Visibility.Visible) ToggleSettings();
@@ -942,7 +992,7 @@ sealed class Hud : Window
         exit.Click += (sender, args) => Close();
         trayMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[]
         {
-            trayShow, trayLock, settingsItem, new System.Windows.Forms.ToolStripSeparator(),
+            trayShow, trayLock, traySettings, new System.Windows.Forms.ToolStripSeparator(),
             trayPrevious, trayPlay, trayNext, new System.Windows.Forms.ToolStripSeparator(), exit
         });
         tray = new System.Windows.Forms.NotifyIcon
@@ -964,6 +1014,7 @@ sealed class Hud : Window
     void SetLocked(bool locked)
     {
         preferences.Locked = locked;
+        if (locked) settingsFrame.Visibility = Visibility.Collapsed;
         PreferencesChanged();
     }
 
@@ -993,9 +1044,15 @@ sealed class Hud : Window
     {
         bool enabled = track != null && !transportBusy;
         bool playing = track != null && track.Playing;
-        string label = playing ? "⏸" : "▶";
-        if (!Equals(playButton.Content, label)) playButton.Content = label;
+        if (displayedPlaying != playing)
+        {
+            playIcon.Data = Geometry.Parse(playing
+                ? "M6,4 L9,4 L9,18 L6,18 Z M13,4 L16,4 L16,18 L13,18 Z"
+                : "M7,4 L18,11 L7,18 Z");
+            displayedPlaying = playing;
+        }
         playButton.ToolTip = playing ? "暂停" : "播放";
+        System.Windows.Automation.AutomationProperties.SetName(playButton, playing ? "暂停" : "播放");
         previousButton.IsEnabled = enabled;
         playButton.IsEnabled = enabled;
         nextButton.IsEnabled = enabled;
@@ -1018,7 +1075,7 @@ sealed class Hud : Window
     {
         return Math.Max(29, preferences.TitleFontSize + 10)
             + current.LineHeight * 2 + (preferences.Preview ? next.FontSize + 13 : 0)
-            + 56 + preferences.BorderWidth * 2;
+            + 22 + (preferences.Locked ? 0 : 34) + preferences.BorderWidth * 2;
     }
 
     Thumb CreateResizeGrip()
@@ -1031,7 +1088,7 @@ sealed class Hud : Window
         };
         System.Windows.Automation.AutomationProperties.SetName(grip, "调整浮窗大小");
         var hitArea = new FrameworkElementFactory(typeof(Border));
-        hitArea.SetValue(Border.BackgroundProperty, Color("#55303842"));
+        hitArea.SetValue(Border.BackgroundProperty, Brushes.Transparent);
         hitArea.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
         var mark = new FrameworkElementFactory(typeof(System.Windows.Shapes.Path));
         mark.SetValue(System.Windows.Shapes.Path.DataProperty, Geometry.Parse("M 5,17 L 17,5 M 10,17 L 17,10 M 15,17 L 17,15"));
@@ -1270,6 +1327,12 @@ sealed class Hud : Window
         next.Visibility = preferences.Preview ? Visibility.Visible : Visibility.Collapsed;
         var layout = (Grid)card.Child;
         bool settingsOpen = settingsFrame.Visibility == Visibility.Visible;
+        var controlsVisibility = preferences.Locked ? Visibility.Collapsed : Visibility.Visible;
+        closeButton.Visibility = controlsVisibility;
+        settingsButton.Visibility = controlsVisibility;
+        transport.Visibility = controlsVisibility;
+        if (preferences.Locked) plainNavigation.Visibility = Visibility.Collapsed;
+        layout.RowDefinitions[3].Height = new GridLength(preferences.Locked ? 0 : 34);
         resizeGrip.Visibility = settingsOpen || preferences.Locked ? Visibility.Collapsed : Visibility.Visible;
         resizeGrip.IsEnabled = !preferences.Locked;
         title.Cursor = preferences.Locked ? Cursors.Arrow : Cursors.SizeAll;
@@ -1277,12 +1340,14 @@ sealed class Hud : Window
         lockButton.Content = preferences.Locked ? "🔒" : "🔓";
         lockButton.ToolTip = preferences.Locked ? "解锁窗口位置和大小" : "锁定窗口位置和大小";
         if (trayLock != null) trayLock.Checked = preferences.Locked;
+        if (traySettings != null) traySettings.Enabled = !preferences.Locked;
         double headerHeight = settingsOpen ? 42 : Math.Max(29, preferences.TitleFontSize + 10);
         double previewHeight = preferences.Preview ? (settingsOpen ? 42 : next.FontSize + 13) : 0;
         layout.RowDefinitions[0].Height = new GridLength(headerHeight);
         layout.RowDefinitions[2].Height = new GridLength(previewHeight);
         double lyricHeight = settingsOpen ? Math.Ceiling(52 * 1.18) * 2 : current.MaxHeight;
-        double newHeight = headerHeight + lyricHeight + previewHeight + 71 + preferences.BorderWidth * 2;
+        double newHeight = headerHeight + lyricHeight + previewHeight + 37
+            + (preferences.Locked ? 0 : 34) + preferences.BorderWidth * 2;
         if (!settingsOpen && preferences.WindowHeight > 0)
             newHeight = Math.Max(MinimumHudHeight(), Math.Min(SystemParameters.WorkArea.Height - 16, preferences.WindowHeight));
         double settingsHeight = 0;
@@ -1305,6 +1370,7 @@ sealed class Hud : Window
 
     void ToggleSettings()
     {
+        if (preferences.Locked) return;
         settingsFrame.Visibility = settingsFrame.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
         ApplyPreferences();
     }
@@ -1460,7 +1526,7 @@ sealed class Hud : Window
         int fillEnd = -1;
         double fraction = 0;
         bool plain = selected != null && !selected.instrumental && !selected.synced && selected.lines.Count > 0;
-        plainNavigation.Visibility = plain ? Visibility.Visible : Visibility.Collapsed;
+        plainNavigation.Visibility = plain && !preferences.Locked ? Visibility.Visible : Visibility.Collapsed;
         if (track != null && selected != null)
         {
             if (selected.instrumental) currentText = "纯音乐";

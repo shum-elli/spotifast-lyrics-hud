@@ -63,8 +63,19 @@ static class HudChecks
         const BindingFlags access = BindingFlags.Instance | BindingFlags.NonPublic;
         var setLocked = typeof(Hud).GetMethod("SetLocked", access);
         var grip = (Thumb)typeof(Hud).GetField("resizeGrip", access).GetValue(hud);
+        var lockControl = (Button)typeof(Hud).GetField("lockButton", access).GetValue(hud);
+        var closeControl = (Button)typeof(Hud).GetField("closeButton", access).GetValue(hud);
+        var settingsControl = (Button)typeof(Hud).GetField("settingsButton", access).GetValue(hud);
+        var transport = (StackPanel)typeof(Hud).GetField("transport", access).GetValue(hud);
+        foreach (var name in new[] { "lockButton", "closeButton", "settingsButton", "previousButton", "playButton", "nextButton" })
+        {
+            var button = (Button)typeof(Hud).GetField(name, access).GetValue(hud);
+            Require(((SolidColorBrush)button.Background).Color.A == 0 && button.Template != null);
+        }
         setLocked.Invoke(hud, new object[] { true });
         Require(!hud.ShowInTaskbar && !grip.IsEnabled && grip.Visibility == Visibility.Collapsed);
+        Require(lockControl.Visibility == Visibility.Visible && closeControl.Visibility == Visibility.Collapsed
+            && settingsControl.Visibility == Visibility.Collapsed && transport.Visibility == Visibility.Collapsed);
         var sizeBefore = new Size(hud.Width, hud.Height);
         grip.RaiseEvent(new DragDeltaEventArgs(80, 80) { RoutedEvent = Thumb.DragDeltaEvent });
         Require(hud.Width == sizeBefore.Width && hud.Height == sizeBefore.Height);
@@ -75,6 +86,8 @@ static class HudChecks
         Require(dragTitle.Cursor == Cursors.Arrow);
         setLocked.Invoke(hud, new object[] { false });
         Require(grip.IsEnabled && grip.Visibility == Visibility.Visible && dragTitle.Cursor == Cursors.SizeAll);
+        Require(closeControl.Visibility == Visibility.Visible && settingsControl.Visibility == Visibility.Visible
+            && transport.Visibility == Visibility.Visible);
         ((DispatcherTimer)typeof(Hud).GetField("save", access).GetValue(hud)).Stop();
         using (var iconData = typeof(Hud).Assembly.GetManifestResourceStream("HUD.Icon"))
         using (var icon = new System.Drawing.Icon(iconData))
@@ -93,7 +106,7 @@ static class HudChecks
         timeline.Update(track, 0, true);
         render.Invoke(hud, null);
         var play = (Button)typeof(Hud).GetField("playButton", access).GetValue(hud);
-        Require(Equals(play.Content, "▶") && play.IsEnabled);
+        Require(Equals(play.ToolTip, "播放") && play.IsEnabled && play.Content is System.Windows.Shapes.Path);
         var runs = display.Inlines.OfType<Run>().ToArray();
         var active = runs[0];
         var gradient = (LinearGradientBrush)active.Foreground;
@@ -117,7 +130,20 @@ static class HudChecks
         track.Playing = true;
         timeline.Update(track, 0, false);
         render.Invoke(hud, null);
-        Require(Equals(play.Content, "⏸"));
+        Require(Equals(play.ToolTip, "暂停"));
         Console.WriteLine("Playback button reflects paused and playing states.");
+        typeof(Hud).GetField("lyrics", access).SetValue(hud, new Lyrics
+        {
+            lines = new List<Line> { new Line { text = "纯文本测试" } }
+        });
+        setLocked.Invoke(hud, new object[] { true });
+        render.Invoke(hud, null);
+        var navigation = (StackPanel)typeof(Hud).GetField("plainNavigation", access).GetValue(hud);
+        Require(navigation.Visibility == Visibility.Collapsed && transport.Visibility == Visibility.Collapsed);
+        typeof(Hud).GetMethod("ToggleSettings", access).Invoke(hud, null);
+        var panel = (Border)typeof(Hud).GetField("settingsFrame", access).GetValue(hud);
+        Require(panel.Visibility == Visibility.Collapsed);
+        ((DispatcherTimer)typeof(Hud).GetField("save", access).GetValue(hud)).Stop();
+        Console.WriteLine("Transparent controls keep only unlock visible while locked, including plain lyrics.");
     }
 }
