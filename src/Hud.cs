@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -17,6 +18,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -693,6 +695,27 @@ sealed class Hud : Window
     System.Windows.Forms.ToolStripMenuItem trayShow, trayLock, traySettings, trayPrevious, trayPlay, trayNext;
     bool transportBusy;
     bool? displayedPlaying;
+    IntPtr nativeWindow;
+    HwndSource nativeSource;
+    bool hotkeyRegistered;
+    const int LockHotkeyId = 0x4844;
+    const int ExtendedStyleIndex = -20;
+    const int MouseTransparentStyle = 0x20;
+    const int NoActivateStyle = 0x08000000;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    static extern int GetWindowStyle(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    static extern int SetWindowStyle(IntPtr window, int index, int value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool UnregisterHotKey(IntPtr window, int id);
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
@@ -712,6 +735,7 @@ sealed class Hud : Window
         ShowActivated = false;
         ShowInTaskbar = false;
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
+        SourceInitialized += (sender, args) => InitializeWindowInput();
 
         card = new Border
         {
@@ -898,6 +922,8 @@ sealed class Hud : Window
             render.Stop();
             if (lookup != null) lookup.Cancel();
             if (save.IsEnabled) SavePreferences();
+            if (hotkeyRegistered) UnregisterHotKey(nativeWindow, LockHotkeyId);
+            if (nativeSource != null && !nativeSource.IsDisposed) nativeSource.RemoveHook(WindowMessage);
             if (tray != null)
             {
                 tray.Visible = false;
@@ -974,7 +1000,8 @@ sealed class Hud : Window
         trayMenu = new System.Windows.Forms.ContextMenuStrip();
         trayShow = new System.Windows.Forms.ToolStripMenuItem("隐藏歌词");
         trayShow.Click += (sender, args) => { if (IsVisible) Hide(); else ShowFromTray(); };
-        trayLock = new System.Windows.Forms.ToolStripMenuItem("锁定窗口") { Checked = preferences.Locked };
+        trayLock = new System.Windows.Forms.ToolStripMenuItem("锁定并穿透鼠标") { Checked = preferences.Locked };
+        if (hotkeyRegistered) trayLock.ShortcutKeyDisplayString = "Ctrl+Alt+L";
         trayLock.Click += (sender, args) => SetLocked(!preferences.Locked);
         trayPrevious = new System.Windows.Forms.ToolStripMenuItem("上一曲");
         trayPlay = new System.Windows.Forms.ToolStripMenuItem("播放");
@@ -1008,14 +1035,69 @@ sealed class Hud : Window
         if (closed) return;
         Show();
         WindowState = WindowState.Normal;
-        Activate();
+        if (!preferences.Locked) Activate();
     }
 
     void SetLocked(bool locked)
     {
+        bool previous = preferences.Locked;
         preferences.Locked = locked;
+        try { ApplyWindowInput(); }
+        catch (System.ComponentModel.Win32Exception error)
+        {
+            preferences.Locked = previous;
+            settingsNotice.Text = "无法切换鼠标穿透。";
+            if (tray != null)
+                tray.ShowBalloonTip(3500, "鼠标穿透", error.Message, System.Windows.Forms.ToolTipIcon.Warning);
+            return;
+        }
         if (locked) settingsFrame.Visibility = Visibility.Collapsed;
         PreferencesChanged();
+    }
+
+    void InitializeWindowInput()
+    {
+        nativeWindow = new WindowInteropHelper(this).Handle;
+        nativeSource = HwndSource.FromHwnd(nativeWindow);
+        nativeSource.AddHook(WindowMessage);
+        hotkeyRegistered = RegisterHotKey(nativeWindow, LockHotkeyId, 0x4003, 0x4C);
+        try { ApplyWindowInput(); }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            preferences.Locked = false;
+            ApplyPreferences();
+            settingsNotice.Text = "无法启用鼠标穿透，窗口已解锁。";
+        }
+        if (!hotkeyRegistered) settingsNotice.Text = "Ctrl+Alt+L 已被占用，请从托盘切换锁定。";
+    }
+
+    void ApplyWindowInput()
+    {
+        if (nativeWindow == IntPtr.Zero) return;
+        int style = GetWindowStyle(nativeWindow, ExtendedStyleIndex);
+        int flags = MouseTransparentStyle | NoActivateStyle;
+        int desired = preferences.Locked ? style | flags : style & ~flags;
+        if (style == desired) return;
+        if (SetWindowStyle(nativeWindow, ExtendedStyleIndex, desired) == 0)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error != 0) throw new System.ComponentModel.Win32Exception(error);
+        }
+    }
+
+    IntPtr WindowMessage(IntPtr window, int message, IntPtr parameter, IntPtr data, ref bool handled)
+    {
+        if (message == 0x0312 && parameter.ToInt32() == LockHotkeyId)
+        {
+            SetLocked(!preferences.Locked);
+            handled = true;
+        }
+        if (message == 0x0021 && preferences.Locked)
+        {
+            handled = true;
+            return new IntPtr(3);
+        }
+        return IntPtr.Zero;
     }
 
     async Task SendPlayback(string command)
@@ -1338,7 +1420,9 @@ sealed class Hud : Window
         title.Cursor = preferences.Locked ? Cursors.Arrow : Cursors.SizeAll;
         title.ToolTip = preferences.Locked ? "窗口已锁定" : "按住拖动浮窗";
         lockButton.Content = preferences.Locked ? "🔒" : "🔓";
-        lockButton.ToolTip = preferences.Locked ? "解锁窗口位置和大小" : "锁定窗口位置和大小";
+        lockButton.ToolTip = preferences.Locked
+            ? "已穿透鼠标，用 Ctrl+Alt+L 或托盘解锁"
+            : "锁定并穿透鼠标（Ctrl+Alt+L）";
         if (trayLock != null) trayLock.Checked = preferences.Locked;
         if (traySettings != null) traySettings.Enabled = !preferences.Locked;
         double headerHeight = settingsOpen ? 42 : Math.Max(29, preferences.TitleFontSize + 10);
@@ -1582,6 +1666,8 @@ sealed class Hud : Window
             }
         }
 
+        if (preferences.Locked)
+            sourceText = hotkeyRegistered ? "鼠标穿透 · Ctrl+Alt+L" : "鼠标穿透 · 托盘解锁";
         if (title.Text != trackText) title.Text = trackText;
         if (source.Text != sourceText) source.Text = sourceText;
         UpdateTransport();

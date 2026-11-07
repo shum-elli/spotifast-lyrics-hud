@@ -145,5 +145,27 @@ static class HudChecks
         Require(panel.Visibility == Visibility.Collapsed);
         ((DispatcherTimer)typeof(Hud).GetField("save", access).GetValue(hud)).Stop();
         Console.WriteLine("Transparent controls keep only unlock visible while locked, including plain lyrics.");
+        var handle = new System.Windows.Interop.WindowInteropHelper(hud).EnsureHandle();
+        var getStyle = typeof(Hud).GetMethod("GetWindowStyle", BindingFlags.NonPublic | BindingFlags.Static);
+        int inputFlags = 0x20 | 0x08000000;
+        int style = (int)getStyle.Invoke(null, new object[] { handle, -20 });
+        Require((style & inputFlags) == inputFlags);
+        setLocked.Invoke(hud, new object[] { false });
+        style = (int)getStyle.Invoke(null, new object[] { handle, -20 });
+        Require((style & inputFlags) == 0);
+        var message = typeof(Hud).GetMethod("WindowMessage", access);
+        var hotkey = new object[] { handle, 0x0312, new IntPtr(0x4844), IntPtr.Zero, false };
+        message.Invoke(hud, hotkey);
+        Require((bool)hotkey[4] && prefs.Locked);
+        var activate = new object[] { handle, 0x0021, IntPtr.Zero, IntPtr.Zero, false };
+        Require((IntPtr)message.Invoke(hud, activate) == new IntPtr(3) && (bool)activate[4]);
+        hotkey[4] = false;
+        message.Invoke(hud, hotkey);
+        Require((bool)hotkey[4] && !prefs.Locked);
+        style = (int)getStyle.Invoke(null, new object[] { handle, -20 });
+        Require((style & inputFlags) == 0);
+        ((DispatcherTimer)typeof(Hud).GetField("save", access).GetValue(hud)).Stop();
+        hud.Close();
+        Console.WriteLine("Native click-through and no-activation flags toggle correctly. Hotkey messages unlock without activation.");
     }
 }
