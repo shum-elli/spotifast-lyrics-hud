@@ -123,6 +123,7 @@ static class Lookup
     static readonly Regex Offset = new Regex(@"\[offset:([+-]?\d+)\]", RegexOptions.IgnoreCase);
     static readonly Regex TrackId = new Regex(@"^[a-zA-Z0-9]{22}$");
     static readonly Regex Whitespace = new Regex(@"\s+");
+    static readonly Regex BilingualTitle = new Regex(@"^(?<title>.*[\u3400-\u9FFF].*?)\s*\((?<alias>[A-Za-z][A-Za-z0-9 &'’.,!?-]*)\)$");
 
     static Lookup()
     {
@@ -135,11 +136,29 @@ static class Lookup
         return new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
     }
 
-    public static async Task<Lyrics> Find(Track track, CancellationToken token)
+    public static async Task<Lyrics> Find(Track track, CancellationToken token, IProgress<Lyrics> progress = null)
     {
-        var local = ReadLocal(track);
-        if (local != null || string.IsNullOrWhiteSpace(track.Artist) || track.Duration <= 0) return local;
+        var available = ReadLocal(track);
+        if (IsTimed(available) || string.IsNullOrWhiteSpace(track.Artist) || track.Duration <= 0) return available;
+        if (available == null) available = await FindExact(track, token).ConfigureAwait(false);
+        if (available == null || IsTimed(available) || string.IsNullOrWhiteSpace(track.Album)) return available;
 
+        if (progress != null) progress.Report(available);
+        try
+        {
+            return await FindAlternate(track, available, token).ConfigureAwait(false) ?? available;
+        }
+        catch (HttpRequestException) { return available; }
+        catch (TaskCanceledException) { token.ThrowIfCancellationRequested(); return available; }
+    }
+
+    static bool IsTimed(Lyrics lyrics)
+    {
+        return lyrics != null && (lyrics.synced || lyrics.instrumental);
+    }
+
+    static async Task<Lyrics> FindExact(Track track, CancellationToken token)
+    {
         string query = "track_name=" + Uri.EscapeDataString(track.Title)
             + "&artist_name=" + Uri.EscapeDataString(track.LeadArtist);
         var exact = await Get<Lrc>("/get?" + query + "&album_name="
@@ -160,6 +179,65 @@ static class Lookup
             .ThenBy(r => Math.Abs(r.duration * 1000 - track.Duration))
             .Select(ConvertRecord).Where(r => r != null).ToList();
         return candidates.FirstOrDefault(r => r.synced) ?? first ?? candidates.FirstOrDefault();
+    }
+
+    static async Task<Lyrics> FindAlternate(Track track, Lyrics plain, CancellationToken token)
+    {
+        string title = ShortTitle(track.Title);
+        string normalizedTitle = Normalized(title);
+        string album = Whitespace.Replace(track.Album, "");
+        var candidates = await Get<Lrc[]>("/search?track_name=" + Uri.EscapeDataString(title), token).ConfigureAwait(false);
+        return (candidates ?? new Lrc[0])
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.syncedLyrics)
+                && Math.Abs(candidate.duration * 1000 - track.Duration) <= 2000
+                && Same(Whitespace.Replace(candidate.albumName ?? "", ""), album)
+                && Normalized(ShortTitle(candidate.trackName)) == normalizedTitle)
+            .OrderBy(candidate => !Same(candidate.artistName, track.LeadArtist))
+            .ThenBy(candidate => Math.Abs(candidate.duration * 1000 - track.Duration))
+            .Select(ConvertRecord)
+            .FirstOrDefault(candidate => candidate != null && candidate.synced && LyricsAgree(plain, candidate));
+    }
+
+    static string ShortTitle(string title)
+    {
+        var match = BilingualTitle.Match(title ?? "");
+        return match.Success ? match.Groups["title"].Value.Trim() : (title ?? "").Trim();
+    }
+
+    static string Normalized(string text)
+    {
+        string simplified = Microsoft.VisualBasic.Strings.StrConv(text,
+            Microsoft.VisualBasic.VbStrConv.SimplifiedChinese, 2052);
+        return new string(simplified.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+    }
+
+    static bool LyricsAgree(Lyrics plain, Lyrics timed)
+    {
+        var original = Trigrams(plain);
+        var candidate = Trigrams(timed);
+        int total = Math.Max(original.Values.Sum(), candidate.Values.Sum());
+        if (total < 30) return false;
+        int matching = 0;
+        foreach (var entry in original)
+        {
+            int count;
+            if (candidate.TryGetValue(entry.Key, out count)) matching += Math.Min(count, entry.Value);
+        }
+        return matching >= total * 0.75;
+    }
+
+    static Dictionary<string, int> Trigrams(Lyrics lyrics)
+    {
+        var text = Normalized(string.Concat(lyrics.lines.Select(line => line.text)));
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i + 2 < text.Length; i++)
+        {
+            string gram = text.Substring(i, 3);
+            int count;
+            counts.TryGetValue(gram, out count);
+            counts[gram] = count + 1;
+        }
+        return counts;
     }
 
     static async Task<T> Get<T>(string path, CancellationToken token) where T : class
@@ -864,7 +942,13 @@ sealed class Hud : Window
         RenderLyrics();
         try
         {
-            var result = await Task.Run(() => Lookup.Find(latest, request.Token));
+            var preview = new Progress<Lyrics>(available =>
+            {
+                if (closed || lookup != request) return;
+                lyrics = available;
+                RenderLyrics();
+            });
+            var result = await Task.Run(() => Lookup.Find(latest, request.Token, preview));
             if (closed || request.IsCancellationRequested) return;
             lyrics = result;
             status = "没有找到歌词";
