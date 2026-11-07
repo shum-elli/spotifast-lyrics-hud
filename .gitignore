@@ -1,0 +1,7 @@
+/bin/
+/obj/
+/settings.json
+/settings.json.*.tmp
+*.user
+*.suo
+.vs/

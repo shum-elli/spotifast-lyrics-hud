@@ -1,0 +1,82 @@
+[
+  {
+    "version": "0.1.0",
+    "snapshot": 1,
+    "description": "基础置顶歌词浮窗与播放进度同步",
+    "source_timestamp": "2026-11-06T06:55:24.319Z",
+    "sha256": "51e529444ee3dcf0443f31863b23e47b4f6486662d64f600b5ee7d12489d675a",
+    "branch": "versions/v0.1.0"
+  },
+  {
+    "version": "0.2.0",
+    "snapshot": 4,
+    "description": "透明度、字号、同步偏移和增强 LRC 导入",
+    "source_timestamp": "2026-11-06T07:01:24.433Z",
+    "sha256": "4ea39cf342b40772398af454f08bf3eba3e4907da59b17c7677c5e32306e20a6",
+    "branch": "versions/v0.2.0"
+  },
+  {
+    "version": "0.3.0",
+    "snapshot": 12,
+    "description": "字体与颜色、边框设置、纯文本歌词翻句",
+    "source_timestamp": "2026-11-06T07:10:19.812Z",
+    "sha256": "0376e46bd2e031ae93cfb518ac86ecf11ca82f751b058d54d40178f8c9a7195e",
+    "branch": "versions/v0.3.0"
+  },
+  {
+    "version": "0.4.0",
+    "snapshot": 14,
+    "description": "联网匹配其他元数据写法的同步歌词",
+    "source_timestamp": "2026-11-06T07:14:09.467Z",
+    "sha256": "f63b3b13155ebe4039c537d6a9edc8b722ca7d82d794c869a6396012b6de4221",
+    "branch": "versions/v0.4.0"
+  },
+  {
+    "version": "0.5.0",
+    "snapshot": 19,
+    "description": "拖动缩放窗口、歌名字号、初版简体转换",
+    "source_timestamp": "2026-11-06T07:19:45.390Z",
+    "sha256": "200335557bd85d36b958086344f22a8790ffd0397e89eda060a759f77c70975b",
+    "branch": "versions/v0.5.0"
+  },
+  {
+    "version": "0.6.0",
+    "snapshot": 22,
+    "description": "平滑播放时钟与稳定的逐字渐进高亮",
+    "source_timestamp": "2026-11-06T07:24:02.717Z",
+    "sha256": "b4d23ec6c693a1001fbf8a9accafd739b77d0b4aeffda210db443cfc14a1e301",
+    "branch": "versions/v0.6.0"
+  },
+  {
+    "version": "0.7.0",
+    "snapshot": 23,
+    "description": "内置 OpenCC 词库，统一转换歌名与歌词",
+    "source_timestamp": "2026-11-06T08:03:01.879Z",
+    "sha256": "142050655f60d586d1db048b0855e58cb166caa0d82df5c650ce1475422996fc",
+    "branch": "versions/v0.7.0"
+  },
+  {
+    "version": "0.8.0",
+    "snapshot": 24,
+    "description": "纯文本播放期间自动发现 Spotifast 新缓存的时间轴",
+    "source_timestamp": "2026-11-06T08:47:20.014Z",
+    "sha256": "92f2cac219e5425052f7102b268b9658903e99d2cab684450ee9a79868c1ed5c",
+    "branch": "versions/v0.8.0"
+  },
+  {
+    "version": "0.8.1",
+    "snapshot": 26,
+    "description": "明确启动时的设置读取顺序与错误提示",
+    "source_timestamp": "2026-11-07T07:19:01.347Z",
+    "sha256": "adbfdc04a7cf73eebd18246096e0e3762245957e5fbe9ed2ab51ce7566520591",
+    "branch": "versions/v0.8.1"
+  },
+  {
+    "version": "0.9.0",
+    "snapshot": 27,
+    "description": "程序同目录配置与旧配置自动迁移",
+    "source_timestamp": "2026-11-07T07:21:07.562Z",
+    "sha256": "5dc384e87a7fb4f63afd7343cc97fd4c1f6a830a9bca6ab3c5ba746e319b23cb",
+    "branch": "versions/v0.9.0"
+  }
+]
