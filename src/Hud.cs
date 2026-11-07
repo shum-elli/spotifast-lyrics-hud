@@ -25,8 +25,16 @@ sealed class Track
     public string Title, Artist, Album, Cover;
     public long Position, Duration;
     public bool Playing;
+    string simplifiedLabel;
     public string Key { get { return Title + "\t" + Artist + "\t" + Album + "\t" + Duration + "\t" + Cover; } }
     public string LeadArtist { get { return Artist.Split(new[] { ", " }, StringSplitOptions.None)[0]; } }
+
+    public string DisplayLabel(bool simplify)
+    {
+        string label = Title + "  ·  " + Artist;
+        if (!simplify) return label;
+        return simplifiedLabel ?? (simplifiedLabel = ChineseText.Simplify(label));
+    }
 }
 
 sealed class PlaybackTimeline
@@ -71,6 +79,7 @@ sealed class PlaybackTimeline
 sealed class Line
 {
     string simplified;
+    int[] simplifiedOffsets;
     public long? at_ms { get; set; }
     public string text { get; set; }
     public List<Segment> Segments { get; set; }
@@ -78,16 +87,92 @@ sealed class Line
     public string DisplayText(bool simplify)
     {
         if (!simplify) return text;
-        return simplified ?? (simplified = ChineseText.Simplify(text));
+        return simplified ?? (simplified = ChineseText.Simplify(text, Segments != null, out simplifiedOffsets));
+    }
+
+    public int DisplayOffset(int sourceOffset, bool simplify)
+    {
+        return simplify && simplifiedOffsets != null ? simplifiedOffsets[sourceOffset] : sourceOffset;
     }
 }
 
 static class ChineseText
 {
+    static readonly Lazy<DictionaryData> OpenCc = new Lazy<DictionaryData>(() => new DictionaryData());
+
     public static string Simplify(string text)
     {
-        if (string.IsNullOrEmpty(text) || !text.Any(c => c >= '\u3400' && c <= '\u9FFF')) return text ?? "";
-        return Microsoft.VisualBasic.Strings.StrConv(text, Microsoft.VisualBasic.VbStrConv.SimplifiedChinese, 2052);
+        int[] unused;
+        return Simplify(text, false, out unused);
+    }
+
+    public static string Simplify(string text, bool keepOffsets, out int[] offsets)
+    {
+        offsets = null;
+        if (string.IsNullOrEmpty(text) || !text.Any(IsHanCandidate)) return text ?? "";
+        var dictionary = OpenCc.Value;
+        var result = new StringBuilder(text.Length);
+        if (keepOffsets) offsets = new int[text.Length + 1];
+        for (int i = 0; i < text.Length;)
+        {
+            string mapped = null;
+            int length = 1;
+            if (IsHanCandidate(text[i]))
+            {
+                for (int size = Math.Min(dictionary.MaxKeyLength, text.Length - i); size >= 1; size--)
+                {
+                    if (!dictionary.Values.TryGetValue(text.Substring(i, size), out mapped)) continue;
+                    length = size;
+                    break;
+                }
+            }
+            if (offsets != null)
+            {
+                int replacementLength = mapped == null ? length : mapped.Length;
+                for (int j = 0; j < length; j++)
+                    offsets[i + j] = result.Length + j * replacementLength / length;
+            }
+            if (mapped == null) result.Append(text[i]);
+            else result.Append(mapped);
+            i += length;
+        }
+        if (offsets != null) offsets[text.Length] = result.Length;
+        return result.ToString();
+    }
+
+    static bool IsHanCandidate(char c)
+    {
+        return (c >= '\u3400' && c <= '\u9FFF') || (c >= '\uF900' && c <= '\uFAFF') || char.IsHighSurrogate(c);
+    }
+
+    sealed class DictionaryData
+    {
+        public readonly Dictionary<string, string> Values = new Dictionary<string, string>(StringComparer.Ordinal);
+        public readonly int MaxKeyLength;
+
+        public DictionaryData()
+        {
+            // OpenCC 1.2.0 t2s dictionaries, with phrase matches preferred over single characters.
+            foreach (var name in new[] { "OpenCC.TSCharacters", "OpenCC.TSPhrases" })
+            {
+                using (var stream = typeof(ChineseText).Assembly.GetManifestResourceStream(name))
+                using (var reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    string row;
+                    while ((row = reader.ReadLine()) != null)
+                    {
+                        if (row.Length == 0 || row[0] == '#') continue;
+                        int tab = row.IndexOf('\t');
+                        if (tab < 1 || tab == row.Length - 1) continue;
+                        var key = row.Substring(0, tab);
+                        int nextValue = row.IndexOf(' ', tab + 1);
+                        var value = nextValue < 0 ? row.Substring(tab + 1) : row.Substring(tab + 1, nextValue - tab - 1);
+                        Values[key] = value;
+                        MaxKeyLength = Math.Max(MaxKeyLength, key.Length);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -674,7 +759,7 @@ sealed class Hud : Window
         playbackSettings.Children.Add(options);
         options.Children.Add(AddOption("卡拉 OK 高亮", preferences.Karaoke, value => preferences.Karaoke = value));
         options.Children.Add(AddOption("显示下一句", preferences.Preview, value => preferences.Preview = value));
-        options.Children.Add(AddOption("简体歌词", preferences.SimplifiedLyrics, value => preferences.SimplifiedLyrics = value));
+        options.Children.Add(AddOption("显示简体中文", preferences.SimplifiedLyrics, value => preferences.SimplifiedLyrics = value));
         var import = ButtonFor("导入当前曲目 LRC", "支持带字词时间戳的增强 LRC", 118, 12);
         import.Click += (sender, args) => ImportLyrics();
         options.Children.Add(import);
@@ -1143,7 +1228,7 @@ sealed class Hud : Window
     void RenderLyrics()
     {
         var selected = CurrentLyrics();
-        string trackText = track == null ? "SPOTIFAST · 桌面歌词" : track.Title + "  ·  " + track.Artist;
+        string trackText = track == null ? "SPOTIFAST · 桌面歌词" : track.DisplayLabel(preferences.SimplifiedLyrics);
         string sourceText = track == null ? "" : (!track.Playing ? "已暂停" : (selected == null ? "" : selected.Source));
         string currentText = track == null ? "等待 Spotifast 播放" : status;
         string nextText = "";
@@ -1170,9 +1255,7 @@ sealed class Hud : Window
                     var line = lines[active];
                     if (line.Segments != null)
                     {
-                        prefix = TimedPrefix(line, position);
-                        if (simplify && currentText.Length != line.text.Length)
-                            prefix = Math.Min(currentText.Length, ChineseText.Simplify(line.text.Substring(0, prefix)).Length);
+                        prefix = line.DisplayOffset(TimedPrefix(line, position), simplify);
                         if (track.Playing) sourceText = "字词同步";
                     }
                     else

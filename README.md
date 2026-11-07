@@ -2,7 +2,7 @@
 
 A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WPF.
 
-为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.6.0**。
+为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.7.0**。
 
 ## 功能
 
@@ -12,6 +12,7 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 - 联网匹配其他元数据写法的同步歌词
 - 拖动缩放窗口、歌名字号、初版简体转换
 - 平滑播放时钟与稳定的逐字渐进高亮
+- 内置 OpenCC 词库，统一转换歌名与歌词
 
 ## 构建与运行
 
@@ -45,6 +46,6 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 
 ## 许可与来源
 
-项目代码采用 [MIT License](LICENSE)。
+项目代码采用 [MIT License](LICENSE)。内置 OpenCC 1.2.0 词库采用 Apache-2.0，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
 与本工具配合使用的 [Spotifast](https://github.com/crmne/spotifast) 和 [LRCLIB](https://github.com/tranxuanthang/lrclib) 各自独立维护。
