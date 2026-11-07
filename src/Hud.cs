@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -30,9 +31,25 @@ sealed class Track
 
 sealed class Line
 {
+    string simplified;
     public long? at_ms { get; set; }
     public string text { get; set; }
     public List<Segment> Segments { get; set; }
+
+    public string DisplayText(bool simplify)
+    {
+        if (!simplify) return text;
+        return simplified ?? (simplified = ChineseText.Simplify(text));
+    }
+}
+
+static class ChineseText
+{
+    public static string Simplify(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.Any(c => c >= '\u3400' && c <= '\u9FFF')) return text ?? "";
+        return Microsoft.VisualBasic.Strings.StrConv(text, Microsoft.VisualBasic.VbStrConv.SimplifiedChinese, 2052);
+    }
 }
 
 sealed class Segment
@@ -206,8 +223,7 @@ static class Lookup
 
     static string Normalized(string text)
     {
-        string simplified = Microsoft.VisualBasic.Strings.StrConv(text,
-            Microsoft.VisualBasic.VbStrConv.SimplifiedChinese, 2052);
+        string simplified = ChineseText.Simplify(text);
         return new string(simplified.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
     }
 
@@ -405,6 +421,10 @@ sealed class Preferences
     public string FontName { get; set; }
     public int BorderWidth { get; set; }
     public int CornerRadius { get; set; }
+    public int WindowWidth { get; set; }
+    public int WindowHeight { get; set; }
+    public int TitleFontSize { get; set; }
+    public bool SimplifiedLyrics { get; set; }
 
     public Preferences()
     {
@@ -419,6 +439,9 @@ sealed class Preferences
         FontName = "Microsoft YaHei UI";
         BorderWidth = 1;
         CornerRadius = 16;
+        WindowWidth = 700;
+        TitleFontSize = 16;
+        SimplifiedLyrics = true;
     }
 
     public static Preferences Load()
@@ -454,6 +477,7 @@ sealed class Hud : Window
     readonly StackPanel playbackSettings = new StackPanel();
     readonly StackPanel appearanceSettings = new StackPanel { Visibility = Visibility.Collapsed };
     readonly Button playbackTab, appearanceTab;
+    readonly Thumb resizeGrip;
     readonly StackPanel plainNavigation;
     readonly TextBlock settingsNotice;
     readonly Preferences preferences = Preferences.Load();
@@ -488,7 +512,7 @@ sealed class Hud : Window
         sweep = new LinearGradientBrush(new GradientStopCollection { gradientOn, gradientOff },
             new Point(0, 0.5), new Point(1, 0.5));
         Title = "Spotifast 歌词浮窗";
-        Width = Math.Min(700, SystemParameters.WorkArea.Width - 32);
+        Width = ClampWidth(preferences.WindowWidth);
         Height = 160;
         Left = SystemParameters.WorkArea.Left + (SystemParameters.WorkArea.Width - Width) / 2;
         Top = SystemParameters.WorkArea.Bottom - Height - 26;
@@ -545,6 +569,11 @@ sealed class Hud : Window
         DockPanel.SetDock(source, Dock.Right);
         header.Children.Add(source);
         title = Text(12, "#FF9AE5BD");
+        title.FontWeight = FontWeights.SemiBold;
+        title.Effect = new System.Windows.Media.Effects.DropShadowEffect
+        {
+            BlurRadius = 4, ShadowDepth = 1, Opacity = 0.8
+        };
         title.Cursor = Cursors.SizeAll;
         title.ToolTip = "按住拖动浮窗";
         title.Background = Brushes.Transparent;
@@ -573,6 +602,9 @@ sealed class Hud : Window
         next.TextAlignment = TextAlignment.Center;
         Grid.SetRow(next, 2);
         layout.Children.Add(next);
+        resizeGrip = CreateResizeGrip();
+        Grid.SetRowSpan(resizeGrip, 3);
+        layout.Children.Add(resizeGrip);
 
         settings.Margin = new Thickness(10, 5, 10, 5);
         settingsFrame = new Border
@@ -597,6 +629,8 @@ sealed class Hud : Window
 
         preferences.FontSize = AddSlider(playbackSettings, "歌词字号", 16, 52, 1, preferences.FontSize, "",
             value => preferences.FontSize = value);
+        preferences.TitleFontSize = AddSlider(playbackSettings, "歌名字号", 10, 32, 1, preferences.TitleFontSize, "",
+            value => preferences.TitleFontSize = value);
         preferences.OffsetMs = AddSlider(playbackSettings, "歌词提前量", -2000, 2000, 50, preferences.OffsetMs, " ms",
             value => preferences.OffsetMs = value);
 
@@ -604,6 +638,7 @@ sealed class Hud : Window
         playbackSettings.Children.Add(options);
         options.Children.Add(AddOption("卡拉 OK 高亮", preferences.Karaoke, value => preferences.Karaoke = value));
         options.Children.Add(AddOption("显示下一句", preferences.Preview, value => preferences.Preview = value));
+        options.Children.Add(AddOption("简体歌词", preferences.SimplifiedLyrics, value => preferences.SimplifiedLyrics = value));
         var import = ButtonFor("导入当前曲目 LRC", "支持带字词时间戳的增强 LRC", 118, 12);
         import.Click += (sender, args) => ImportLyrics();
         options.Children.Add(import);
@@ -619,7 +654,7 @@ sealed class Hud : Window
         options.Children.Add(reset);
         settingsNotice = Text(11, "#FFD0DCE5");
         settingsNotice.Margin = new Thickness(0, 2, 0, 3);
-        settingsNotice.Text = "正值让歌词提前。带字词时间戳的 LRC 可精确高亮。";
+        settingsNotice.Text = "正值让歌词提前。收起设置后可拖动右下角调整窗口。";
         playbackSettings.Children.Add(settingsNotice);
         BuildAppearance();
 
@@ -652,6 +687,72 @@ sealed class Hud : Window
             BorderThickness = new Thickness(0), Background = Color("#FF2B3540"),
             Foreground = Color("#FFE0E8F0"), Cursor = Cursors.Hand, ToolTip = tip
         };
+    }
+
+    static double ClampWidth(double width)
+    {
+        double limit = Math.Min(1600, SystemParameters.WorkArea.Width - 16);
+        return Math.Max(Math.Min(330, limit), Math.Min(limit, width));
+    }
+
+    double MinimumHudHeight()
+    {
+        return Math.Max(29, preferences.TitleFontSize + 10)
+            + current.LineHeight + (preferences.Preview ? next.FontSize + 13 : 0)
+            + 22 + preferences.BorderWidth * 2;
+    }
+
+    Thumb CreateResizeGrip()
+    {
+        var grip = new Thumb
+        {
+            Width = 22, Height = 22, Cursor = Cursors.SizeNWSE, HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, -8, -5),
+            ToolTip = "拖动调整浮窗宽高", Foreground = highlight
+        };
+        System.Windows.Automation.AutomationProperties.SetName(grip, "调整浮窗大小");
+        var hitArea = new FrameworkElementFactory(typeof(Border));
+        hitArea.SetValue(Border.BackgroundProperty, Color("#55303842"));
+        hitArea.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
+        var mark = new FrameworkElementFactory(typeof(System.Windows.Shapes.Path));
+        mark.SetValue(System.Windows.Shapes.Path.DataProperty, Geometry.Parse("M 5,17 L 17,5 M 10,17 L 17,10 M 15,17 L 17,15"));
+        mark.SetBinding(System.Windows.Shapes.Path.StrokeProperty, new System.Windows.Data.Binding("Foreground")
+        {
+            RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent
+        });
+        mark.SetValue(System.Windows.Shapes.Path.StrokeThicknessProperty, 1.4);
+        hitArea.AppendChild(mark);
+        grip.Template = new ControlTemplate(typeof(Thumb)) { VisualTree = hitArea };
+
+        Point start = new Point();
+        Size original = new Size();
+        Matrix fromPixels = Matrix.Identity;
+        grip.DragStarted += (sender, args) =>
+        {
+            fromPixels = PresentationSource.FromVisual(this).CompositionTarget.TransformFromDevice;
+            start = fromPixels.Transform(PointToScreen(Mouse.GetPosition(this)));
+            original = new Size(Width, Height);
+        };
+        grip.DragDelta += (sender, args) =>
+        {
+            var delta = fromPixels.Transform(PointToScreen(Mouse.GetPosition(this))) - start;
+            Width = ClampWidth(original.Width + delta.X);
+            Height = Math.Max(MinimumHudHeight(), Math.Min(SystemParameters.WorkArea.Height - 16, original.Height + delta.Y));
+        };
+        grip.DragCompleted += (sender, args) =>
+        {
+            if (args.Canceled)
+            {
+                Width = original.Width;
+                Height = original.Height;
+                return;
+            }
+            if (Math.Abs(Width - original.Width) < 1 && Math.Abs(Height - original.Height) < 1) return;
+            preferences.WindowWidth = (int)Math.Round(Width);
+            preferences.WindowHeight = (int)Math.Round(Height);
+            ScheduleSave();
+        };
+        return grip;
     }
 
     void BuildAppearance()
@@ -759,7 +860,8 @@ sealed class Hud : Window
         var slider = new Slider
         {
             Minimum = min, Maximum = max, Value = value, TickFrequency = step, SmallChange = step,
-            LargeChange = step * 5, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center
+            LargeChange = step * 5, IsSnapToTickEnabled = true, IsMoveToPointEnabled = true,
+            VerticalAlignment = VerticalAlignment.Center
         };
         System.Windows.Automation.AutomationProperties.SetName(slider, label);
         slider.ValueChanged += (sender, args) =>
@@ -794,6 +896,11 @@ sealed class Hud : Window
     {
         ApplyPreferences();
         RenderLyrics();
+        ScheduleSave();
+    }
+
+    void ScheduleSave()
+    {
         save.Stop();
         save.Start();
     }
@@ -819,21 +926,32 @@ sealed class Hud : Window
         current.Foreground = textBrush;
         next.Foreground = new SolidColorBrush(textBrush.Color) { Opacity = 0.72 };
         highlight.Color = accent;
+        title.Foreground = highlight;
         gradientOn.Color = accent;
         gradientOff.Color = textBrush.Color;
         var font = new FontFamily(preferences.FontName + ", Microsoft YaHei UI, Segoe UI");
         current.FontFamily = font;
         next.FontFamily = font;
+        title.FontFamily = font;
+        title.FontSize = preferences.TitleFontSize;
         current.FontSize = preferences.FontSize;
         current.LineHeight = Math.Ceiling(preferences.FontSize * 1.18);
         current.MaxHeight = current.LineHeight * 2;
         next.FontSize = Math.Max(11, Math.Round(preferences.FontSize * 0.56));
         next.Visibility = preferences.Preview ? Visibility.Visible : Visibility.Collapsed;
         var layout = (Grid)card.Child;
-        layout.RowDefinitions[2].Height = new GridLength(preferences.Preview ? next.FontSize + 13 : 0);
-        double newHeight = 29 + current.MaxHeight + layout.RowDefinitions[2].Height.Value + 37 + preferences.BorderWidth * 2;
+        bool settingsOpen = settingsFrame.Visibility == Visibility.Visible;
+        resizeGrip.Visibility = settingsOpen ? Visibility.Collapsed : Visibility.Visible;
+        double headerHeight = settingsOpen ? 42 : Math.Max(29, preferences.TitleFontSize + 10);
+        double previewHeight = preferences.Preview ? (settingsOpen ? 42 : next.FontSize + 13) : 0;
+        layout.RowDefinitions[0].Height = new GridLength(headerHeight);
+        layout.RowDefinitions[2].Height = new GridLength(previewHeight);
+        double lyricHeight = settingsOpen ? Math.Ceiling(52 * 1.18) * 2 : current.MaxHeight;
+        double newHeight = headerHeight + lyricHeight + previewHeight + 37 + preferences.BorderWidth * 2;
+        if (!settingsOpen && preferences.WindowHeight > 0)
+            newHeight = Math.Max(MinimumHudHeight(), Math.Min(SystemParameters.WorkArea.Height - 16, preferences.WindowHeight));
         double settingsHeight = 0;
-        if (settingsFrame.Visibility == Visibility.Visible)
+        if (settingsOpen)
         {
             var page = appearanceSettings.Visibility == Visibility.Visible ? appearanceSettings : playbackSettings;
             page.Measure(new Size(Math.Max(0, Width - 52 - preferences.BorderWidth * 2), double.PositiveInfinity));
@@ -1001,13 +1119,17 @@ sealed class Hud : Window
                 position += preferences.OffsetMs;
                 var lines = selected.lines;
                 int active = ActiveLine(lines, position);
-                currentText = active < 0 || string.IsNullOrWhiteSpace(lines[active].text) ? "♪" : lines[active].text;
+                bool simplify = preferences.SimplifiedLyrics;
+                currentText = active < 0 || string.IsNullOrWhiteSpace(lines[active].text)
+                    ? "♪" : lines[active].DisplayText(simplify);
                 if (preferences.Karaoke && active >= 0 && currentText != "♪")
                 {
                     var line = lines[active];
                     if (line.Segments != null)
                     {
                         prefix = TimedPrefix(line, position);
+                        if (simplify && currentText.Length != line.text.Length)
+                            prefix = Math.Min(currentText.Length, ChineseText.Simplify(line.text.Substring(0, prefix)).Length);
                         if (track.Playing) sourceText = "字词同步";
                     }
                     else
@@ -1034,15 +1156,16 @@ sealed class Hud : Window
                 for (int i = active + 1; i < lines.Count; i++)
                 {
                     if (string.IsNullOrWhiteSpace(lines[i].text)) continue;
-                    nextText = lines[i].text;
+                    nextText = lines[i].DisplayText(simplify);
                     break;
                 }
             }
             else if (plain)
             {
                 plainIndex = Math.Min(plainIndex, selected.lines.Count - 1);
-                currentText = selected.lines[plainIndex].text;
-                nextText = plainIndex + 1 < selected.lines.Count ? selected.lines[plainIndex + 1].text : "";
+                currentText = selected.lines[plainIndex].DisplayText(preferences.SimplifiedLyrics);
+                nextText = plainIndex + 1 < selected.lines.Count
+                    ? selected.lines[plainIndex + 1].DisplayText(preferences.SimplifiedLyrics) : "";
                 sourceText = "纯文本 " + (plainIndex + 1) + "/" + selected.lines.Count;
             }
         }
