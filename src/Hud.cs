@@ -698,6 +698,11 @@ sealed class Hud : Window
     IntPtr nativeWindow;
     HwndSource nativeSource;
     bool hotkeyRegistered;
+    Window unlockSurface;
+    HwndSource unlockSource;
+    IntPtr unlockHandle;
+    Rect unlockBounds = Rect.Empty;
+    bool updatingUnlockSurface;
     const int LockHotkeyId = 0x4844;
     const int ExtendedStyleIndex = -20;
     const int MouseTransparentStyle = 0x20;
@@ -716,6 +721,10 @@ sealed class Hud : Window
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool UnregisterHotKey(IntPtr window, int id);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
@@ -910,6 +919,7 @@ sealed class Hud : Window
         Loaded += async (sender, args) =>
         {
             SetupTray();
+            SynchronizeUnlockSurface();
             RenderLyrics();
             poll.Start();
             render.Start();
@@ -918,6 +928,7 @@ sealed class Hud : Window
         Closed += (sender, args) =>
         {
             closed = true;
+            if (unlockSurface != null) unlockSurface.Close();
             poll.Stop();
             render.Stop();
             if (lookup != null) lookup.Cancel();
@@ -937,7 +948,11 @@ sealed class Hud : Window
             if (IsVisible && IsLoaded) render.Start();
             else render.Stop();
             if (trayShow != null) trayShow.Text = IsVisible ? "隐藏歌词" : "显示歌词";
+            SynchronizeUnlockSurface();
         };
+        LocationChanged += (sender, args) => SynchronizeUnlockSurface();
+        StateChanged += (sender, args) => SynchronizeUnlockSurface();
+        lockButton.LayoutUpdated += (sender, args) => SynchronizeUnlockSurface();
     }
 
     static Button ButtonFor(string label, string tip, double width, double size)
@@ -1053,6 +1068,86 @@ sealed class Hud : Window
         }
         if (locked) settingsFrame.Visibility = Visibility.Collapsed;
         PreferencesChanged();
+    }
+
+    void SynchronizeUnlockSurface()
+    {
+        if (updatingUnlockSurface) return;
+        updatingUnlockSurface = true;
+        try
+        {
+            if (closed || !preferences.Locked || !IsVisible || !IsLoaded || WindowState == WindowState.Minimized)
+            {
+                if (unlockSurface != null) unlockSurface.Hide();
+                lockButton.Opacity = 0.85;
+                return;
+            }
+            if (!lockButton.IsArrangeValid || lockButton.ActualWidth <= 0) return;
+            var first = lockButton.PointToScreen(new Point(0, 0));
+            var last = lockButton.PointToScreen(new Point(lockButton.ActualWidth, lockButton.ActualHeight));
+            var bounds = new Rect(Math.Floor(first.X), Math.Floor(first.Y),
+                Math.Ceiling(last.X) - Math.Floor(first.X), Math.Ceiling(last.Y) - Math.Floor(first.Y));
+            if (unlockSurface == null)
+            {
+                var button = ButtonFor("🔒", "解锁窗口", 30, 14);
+                button.FontFamily = lockButton.FontFamily;
+                button.Focusable = false;
+                button.Click += (sender, args) => SetLocked(false);
+                System.Windows.Automation.AutomationProperties.SetName(button, "解锁窗口");
+                unlockSurface = new Window
+                {
+                    Title = "Spotifast 解锁按钮", Owner = this, Content = button,
+                    Width = lockButton.ActualWidth, Height = lockButton.ActualHeight,
+                    Left = Left, Top = Top, WindowStyle = WindowStyle.None,
+                    ResizeMode = ResizeMode.NoResize, AllowsTransparency = true,
+                    Background = Color("#01000000"), ShowInTaskbar = false,
+                    ShowActivated = false, Focusable = false, Topmost = true
+                };
+                unlockSurface.SourceInitialized += (sender, args) =>
+                {
+                    unlockHandle = new WindowInteropHelper(unlockSurface).Handle;
+                    SetWindowStyle(unlockHandle, ExtendedStyleIndex,
+                        GetWindowStyle(unlockHandle, ExtendedStyleIndex) | NoActivateStyle);
+                    unlockSource = HwndSource.FromHwnd(unlockHandle);
+                    unlockSource.AddHook(UnlockWindowMessage);
+                };
+                unlockSurface.Closed += (sender, args) =>
+                {
+                    if (unlockSource != null && !unlockSource.IsDisposed)
+                        unlockSource.RemoveHook(UnlockWindowMessage);
+                    unlockSource = null;
+                    unlockHandle = IntPtr.Zero;
+                    unlockSurface = null;
+                    unlockBounds = Rect.Empty;
+                };
+                new WindowInteropHelper(unlockSurface).EnsureHandle();
+            }
+            bool showing = !unlockSurface.IsVisible;
+            if (showing || unlockBounds != bounds)
+            {
+                SetWindowPos(unlockHandle, new IntPtr(-1), (int)bounds.X, (int)bounds.Y,
+                    (int)bounds.Width, (int)bounds.Height, 0x0210);
+                if (showing)
+                {
+                    unlockSurface.Show();
+                    SetWindowPos(unlockHandle, new IntPtr(-1), (int)bounds.X, (int)bounds.Y,
+                        (int)bounds.Width, (int)bounds.Height, 0x0210);
+                }
+                unlockBounds = bounds;
+            }
+            lockButton.Opacity = 0;
+        }
+        finally { updatingUnlockSurface = false; }
+    }
+
+    IntPtr UnlockWindowMessage(IntPtr window, int message, IntPtr parameter, IntPtr data, ref bool handled)
+    {
+        if (message == 0x0021)
+        {
+            handled = true;
+            return new IntPtr(3);
+        }
+        return IntPtr.Zero;
     }
 
     void InitializeWindowInput()
@@ -1421,7 +1516,7 @@ sealed class Hud : Window
         title.ToolTip = preferences.Locked ? "窗口已锁定" : "按住拖动浮窗";
         lockButton.Content = preferences.Locked ? "🔒" : "🔓";
         lockButton.ToolTip = preferences.Locked
-            ? "已穿透鼠标，用 Ctrl+Alt+L 或托盘解锁"
+            ? "点击解锁窗口，也可用 Ctrl+Alt+L 或托盘"
             : "锁定并穿透鼠标（Ctrl+Alt+L）";
         if (trayLock != null) trayLock.Checked = preferences.Locked;
         if (traySettings != null) traySettings.Enabled = !preferences.Locked;
@@ -1450,6 +1545,7 @@ sealed class Hud : Window
         var area = SystemParameters.WorkArea;
         if (area.Contains(new Point(Left, Top)))
             Top = Math.Max(area.Top, Math.Min(bottom - newHeight, area.Bottom - newHeight));
+        SynchronizeUnlockSurface();
     }
 
     void ToggleSettings()
@@ -1667,7 +1763,7 @@ sealed class Hud : Window
         }
 
         if (preferences.Locked)
-            sourceText = hotkeyRegistered ? "鼠标穿透 · Ctrl+Alt+L" : "鼠标穿透 · 托盘解锁";
+            sourceText = hotkeyRegistered ? "鼠标穿透 · Ctrl+Alt+L" : "鼠标穿透 · 点击锁图标解锁";
         if (title.Text != trackText) title.Text = trackText;
         if (source.Text != sourceText) source.Text = sourceText;
         UpdateTransport();

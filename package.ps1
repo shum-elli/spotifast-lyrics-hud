@@ -29,8 +29,8 @@ The app creates settings.json beside the EXE. Keep it when upgrading.
 Use the gear button for settings. Drag the bottom-right handle to resize.
 Use the lock button to prevent moving and resizing. The lock state is saved.
 Controls have transparent backgrounds. Only the unlock button is visible while locked.
-Locking also passes all mouse input through the overlay and prevents activation.
-Use Ctrl+Alt+L or the tray menu to unlock; the lock icon itself is click-through.
+While locked, mouse input passes through the lyrics; only the lock icon is clickable.
+The unlock button does not activate the overlay. Ctrl+Alt+L and the tray menu also unlock it.
 Previous, play/pause, and next are available on the overlay and tray menu.
 The app stays in the system tray. Double-click its icon to show the overlay.
 The X button hides the overlay. Use Exit in the tray menu to quit.
@@ -53,7 +53,7 @@ $notes = 'Portable Windows build. Extract the ZIP and run Spotifast Lyrics HUD.e
     [Environment]::NewLine +
     'settings.json is created beside the EXE. Preserve it when upgrading.' +
     [Environment]::NewLine +
-    'Locked overlays pass mouse input through and do not activate. Ctrl+Alt+L or the tray menu unlocks them.' +
+    'While locked, lyrics pass mouse input through. The lock icon stays clickable without activating the overlay.' +
     [Environment]::NewLine +
     'The package includes RUNNING.txt and the MIT and OpenCC licenses.'
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_NOTES.txt'), $notes)
