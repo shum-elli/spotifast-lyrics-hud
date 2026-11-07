@@ -395,7 +395,7 @@ static class Lookup
         return string.Equals((a ?? "").Trim(), (b ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    static Lyrics ReadLocal(Track track)
+    public static Lyrics ReadLocal(Track track)
     {
         var history = ReadJson<Play[]>(Path.Combine(Spotifast.Root, @"data\history.json"));
         var matching = (history ?? new Play[0]).Select(p => p.track)
@@ -627,6 +627,7 @@ sealed class Hud : Window
     int misses;
     int plainIndex;
     DateTime retryAt = DateTime.MaxValue;
+    DateTime cacheCheckAt = DateTime.MaxValue;
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
@@ -1173,10 +1174,25 @@ sealed class Hud : Window
             plainIndex = 0;
             status = "";
             retryAt = DateTime.MaxValue;
+            cacheCheckAt = DateTime.MaxValue;
         }
         if (latest != null && (changed || DateTime.UtcNow >= retryAt))
             await RefreshLyrics(latest);
+        else if (latest != null && lookup == null && DateTime.UtcNow >= cacheCheckAt)
+            await RefreshCachedTiming(latest);
         RenderLyrics();
+    }
+
+    async Task RefreshCachedTiming(Track latest)
+    {
+        // Spotifast can write timed lyrics after its panel is opened mid-song.
+        var plain = lyrics;
+        cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
+        var cached = await Task.Run(() => Lookup.ReadLocal(latest));
+        if (closed || track == null || track.Key != latest.Key || lyrics != plain) return;
+        if (cached == null || !cached.synced) return;
+        lyrics = cached;
+        cacheCheckAt = DateTime.MaxValue;
     }
 
     async Task RefreshLyrics(Track latest)
@@ -1199,12 +1215,14 @@ sealed class Hud : Window
             lyrics = result;
             status = "没有找到歌词";
             if (result == null) retryAt = DateTime.UtcNow.AddSeconds(20);
+            else if (!result.synced && !result.instrumental) cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
         }
         catch (Exception)
         {
             if (closed || request.IsCancellationRequested) return;
             status = "暂时无法获取歌词";
             retryAt = DateTime.UtcNow.AddSeconds(20);
+            if (lyrics != null && !lyrics.synced && !lyrics.instrumental) cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
         }
         finally
         {
