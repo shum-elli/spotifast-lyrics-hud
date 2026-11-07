@@ -529,9 +529,12 @@ static class Lookup
 
 sealed class Preferences
 {
+    public static string LoadError;
     static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpotifastLyricsHud");
     static readonly string FilePath = Path.Combine(DirectoryPath, "settings.json");
+
+    static Preferences() { }
 
     public int Background { get; set; }
     public int FontSize { get; set; }
@@ -570,15 +573,16 @@ sealed class Preferences
 
     public static Preferences Load()
     {
+        LoadError = null;
         try
         {
             if (File.Exists(FilePath))
                 return new JavaScriptSerializer().Deserialize<Preferences>(File.ReadAllText(FilePath)) ?? new Preferences();
         }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        catch (ArgumentException) { }
-        catch (InvalidOperationException) { }
+        catch (IOException error) { LoadError = error.ToString(); }
+        catch (UnauthorizedAccessException error) { LoadError = error.ToString(); }
+        catch (ArgumentException error) { LoadError = error.ToString(); }
+        catch (InvalidOperationException error) { LoadError = error.ToString(); }
         return new Preferences();
     }
 
@@ -604,7 +608,7 @@ sealed class Hud : Window
     readonly Thumb resizeGrip;
     readonly StackPanel plainNavigation;
     readonly TextBlock settingsNotice;
-    readonly Preferences preferences = Preferences.Load();
+    readonly Preferences preferences;
     readonly SolidColorBrush highlight = new SolidColorBrush();
     readonly DispatcherTimer save = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
     readonly DispatcherTimer poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
@@ -631,8 +635,9 @@ sealed class Hud : Window
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
-    public Hud()
+    public Hud(Preferences startupPreferences = null)
     {
+        preferences = startupPreferences ?? Preferences.Load();
         Title = "Spotifast 歌词浮窗";
         Width = ClampWidth(preferences.WindowWidth);
         Height = 160;
@@ -776,7 +781,10 @@ sealed class Hud : Window
         options.Children.Add(reset);
         settingsNotice = Text(11, "#FFD0DCE5");
         settingsNotice.Margin = new Thickness(0, 2, 0, 3);
-        settingsNotice.Text = "正值让歌词提前。收起设置后可拖动右下角调整窗口。";
+        settingsNotice.Text = Preferences.LoadError == null
+            ? "正值让歌词提前。收起设置后可拖动右下角调整窗口。"
+            : "读取保存设置失败，当前使用默认外观。";
+        if (Preferences.LoadError != null) settingsNotice.ToolTip = Preferences.LoadError;
         playbackSettings.Children.Add(settingsNotice);
         BuildAppearance();
 
@@ -1417,7 +1425,9 @@ static class Program
         using (var instance = new Mutex(true, "Local\\SpotifastLyricsHud", out first))
         {
             if (!first) return 0;
-            return new Application().Run(new Hud());
+            var preferences = Preferences.Load();
+            var app = new Application();
+            return app.Run(new Hud(preferences));
         }
     }
 }
