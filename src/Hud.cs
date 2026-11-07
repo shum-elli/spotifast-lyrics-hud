@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -31,6 +32,13 @@ sealed class Line
 {
     public long? at_ms { get; set; }
     public string text { get; set; }
+    public List<Segment> Segments { get; set; }
+}
+
+sealed class Segment
+{
+    public long At;
+    public int Start;
 }
 
 sealed class Lyrics
@@ -110,6 +118,7 @@ static class Lookup
 {
     static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
     static readonly Regex Stamp = new Regex(@"\[(\d{1,4}):([0-5]\d)(?:[.:](\d{1,3}))?\]");
+    static readonly Regex InlineStamp = new Regex(@"<(\d{1,4}):([0-5]\d)(?:[.:](\d{1,3}))?>");
     static readonly Regex Offset = new Regex(@"\[offset:([+-]?\d+)\]", RegexOptions.IgnoreCase);
     static readonly Regex TrackId = new Regex(@"^[a-zA-Z0-9]{22}$");
     static readonly Regex Whitespace = new Regex(@"\s+");
@@ -222,48 +231,133 @@ static class Lookup
     static Lyrics ConvertRecord(Lrc record)
     {
         if (record == null) return null;
+        return ParseLrc(record.syncedLyrics, "LRCLIB", record.instrumental);
+    }
+
+    public static Lyrics ParseLrc(string lrc, string source, bool instrumental = false)
+    {
         var lines = new List<Line>();
-        if (!string.IsNullOrWhiteSpace(record.syncedLyrics))
+        if (!string.IsNullOrWhiteSpace(lrc))
         {
             int offset;
-            int.TryParse(Offset.Match(record.syncedLyrics).Groups[1].Value, out offset);
-            foreach (var row in record.syncedLyrics.Split('\n'))
+            int.TryParse(Offset.Match(lrc).Groups[1].Value, out offset);
+            foreach (var row in lrc.Split('\n'))
             {
-                var stamps = Stamp.Matches(row);
+                var stamps = new List<Match>();
+                int headerEnd = 0;
+                for (var stamp = Stamp.Match(row); stamp.Success && stamp.Index == headerEnd; stamp = stamp.NextMatch())
+                {
+                    stamps.Add(stamp);
+                    headerEnd += stamp.Length;
+                }
                 if (stamps.Count == 0) continue;
                 var last = stamps[stamps.Count - 1];
                 var content = row.Substring(last.Index + last.Length).Trim();
+                var inline = InlineStamp.Matches(content);
+                var segments = new List<Segment>();
+                var plain = new StringBuilder();
+                int from = 0;
+                foreach (Match tag in inline)
+                {
+                    plain.Append(content, from, tag.Index - from);
+                    segments.Add(new Segment { At = Timestamp(tag, offset), Start = plain.Length });
+                    from = tag.Index + tag.Length;
+                }
+                plain.Append(content, from, content.Length - from);
                 foreach (Match stamp in stamps)
                 {
-                    long minutes = long.Parse(stamp.Groups[1].Value);
-                    long seconds = long.Parse(stamp.Groups[2].Value);
-                    long fraction = long.Parse(stamp.Groups[3].Value.PadRight(3, '0'));
                     lines.Add(new Line
                     {
-                        at_ms = Math.Max(0, minutes * 60000 + seconds * 1000 + fraction - offset),
-                        text = content
+                        at_ms = Timestamp(stamp, offset), text = plain.ToString(),
+                        Segments = stamps.Count == 1 && segments.Count > 0
+                            && segments.SequenceEqual(segments.OrderBy(s => s.At)) ? segments : null
                     });
                 }
             }
         }
         bool timed = lines.Any(l => !string.IsNullOrWhiteSpace(l.text));
-        if (!timed && !record.instrumental) return null;
+        if (!timed && !instrumental) return null;
         return new Lyrics
         {
-            Source = "LRCLIB", synced = timed, instrumental = record.instrumental,
+            Source = source, synced = timed, instrumental = instrumental,
             lines = lines.OrderBy(l => l.at_ms).ToList()
         };
+    }
+
+    static long Timestamp(Match stamp, int offset)
+    {
+        long minutes = long.Parse(stamp.Groups[1].Value);
+        long seconds = long.Parse(stamp.Groups[2].Value);
+        long fraction = long.Parse(stamp.Groups[3].Value.PadRight(3, '0'));
+        return Math.Max(0, minutes * 60000 + seconds * 1000 + fraction - offset);
+    }
+}
+
+sealed class Preferences
+{
+    static readonly string DirectoryPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SpotifastLyricsHud");
+    static readonly string FilePath = Path.Combine(DirectoryPath, "settings.json");
+
+    public int Background { get; set; }
+    public int FontSize { get; set; }
+    public int OffsetMs { get; set; }
+    public bool Karaoke { get; set; }
+    public bool Preview { get; set; }
+
+    public Preferences()
+    {
+        Background = 93;
+        FontSize = 27;
+        Karaoke = true;
+        Preview = true;
+    }
+
+    public static Preferences Load()
+    {
+        try
+        {
+            if (File.Exists(FilePath))
+                return new JavaScriptSerializer().Deserialize<Preferences>(File.ReadAllText(FilePath)) ?? new Preferences();
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (ArgumentException) { }
+        catch (InvalidOperationException) { }
+        return new Preferences();
+    }
+
+    public void Save()
+    {
+        Directory.CreateDirectory(DirectoryPath);
+        string temp = FilePath + ".tmp";
+        File.WriteAllText(temp, new JavaScriptSerializer().Serialize(this));
+        if (File.Exists(FilePath)) File.Replace(temp, FilePath, null);
+        else File.Move(temp, FilePath);
     }
 }
 
 sealed class Hud : Window
 {
     readonly TextBlock title, source, current, next;
+    readonly Border card;
+    readonly Border settingsFrame;
+    readonly StackPanel settings = new StackPanel { Visibility = Visibility.Collapsed };
+    readonly TextBlock settingsNotice;
+    readonly Preferences preferences = Preferences.Load();
+    readonly Brush highlight = Color("#FF9AE5BD");
+    readonly DispatcherTimer save = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
     readonly DispatcherTimer poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
     readonly DispatcherTimer render = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(75) };
     readonly Stopwatch clock = new Stopwatch();
     Track track;
     Lyrics lyrics;
+    Lyrics imported;
+    string importedKey;
+    string displayedLine;
+    int displayedPrefix = -1;
+    string segmentedText;
+    int[] textElements;
     string status = "";
     CancellationTokenSource lookup;
     bool reading, closed;
@@ -288,7 +382,7 @@ sealed class Hud : Window
         ShowInTaskbar = true;
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
 
-        var card = new Border
+        card = new Border
         {
             Background = Color("#ED151B22"), BorderBrush = Color("#FF34404A"),
             BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(16),
@@ -300,18 +394,19 @@ sealed class Hud : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var header = new DockPanel { LastChildFill = true };
         layout.Children.Add(header);
-        var close = new Button
-        {
-            Content = "×", FontSize = 21, Width = 30, Height = 27, Padding = new Thickness(0),
-            BorderThickness = new Thickness(0), Background = Color("#FF2B3540"),
-            Foreground = Color("#FFE0E8F0"), Cursor = Cursors.Hand, ToolTip = "关闭浮窗"
-        };
+        var close = ButtonFor("×", "关闭浮窗", 30, 21);
         close.Click += (sender, args) => Close();
         DockPanel.SetDock(close, Dock.Right);
         header.Children.Add(close);
+        var gear = ButtonFor("⚙", "歌词设置", 30, 18);
+        gear.Margin = new Thickness(0, 0, 6, 0);
+        gear.Click += (sender, args) => ToggleSettings();
+        DockPanel.SetDock(gear, Dock.Right);
+        header.Children.Add(gear);
 
         source = Text(11, "#FF9EACBA");
         source.Margin = new Thickness(10, 0, 11, 0);
@@ -331,10 +426,12 @@ sealed class Hud : Window
         current.FontWeight = FontWeights.SemiBold;
         current.TextAlignment = TextAlignment.Center;
         current.TextWrapping = TextWrapping.Wrap;
-        current.LineHeight = 32;
         current.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
-        current.MaxHeight = 65;
         current.ClipToBounds = true;
+        current.Effect = new System.Windows.Media.Effects.DropShadowEffect
+        {
+            BlurRadius = 5, ShadowDepth = 1, Opacity = 0.9
+        };
         Grid.SetRow(current, 1);
         layout.Children.Add(current);
 
@@ -343,6 +440,45 @@ sealed class Hud : Window
         Grid.SetRow(next, 2);
         layout.Children.Add(next);
 
+        settings.Margin = new Thickness(10, 5, 10, 5);
+        settingsFrame = new Border
+        {
+            Child = settings, Background = Color("#F026303A"), CornerRadius = new CornerRadius(8),
+            Visibility = Visibility.Collapsed
+        };
+        Grid.SetRow(settingsFrame, 3);
+        layout.Children.Add(settingsFrame);
+        preferences.Background = AddSlider("背景不透明度", 0, 100, 1, preferences.Background, "%",
+            value => preferences.Background = value);
+        preferences.FontSize = AddSlider("歌词字号", 16, 52, 1, preferences.FontSize, "",
+            value => preferences.FontSize = value);
+        preferences.OffsetMs = AddSlider("歌词提前量", -2000, 2000, 50, preferences.OffsetMs, " ms",
+            value => preferences.OffsetMs = value);
+
+        var options = new WrapPanel { Margin = new Thickness(0, 6, 0, 3) };
+        settings.Children.Add(options);
+        options.Children.Add(AddOption("卡拉 OK 高亮", preferences.Karaoke, value => preferences.Karaoke = value));
+        options.Children.Add(AddOption("显示下一句", preferences.Preview, value => preferences.Preview = value));
+        var import = ButtonFor("导入当前曲目 LRC", "支持带字词时间戳的增强 LRC", 118, 12);
+        import.Click += (sender, args) => ImportLyrics();
+        options.Children.Add(import);
+        var reset = ButtonFor("清除导入", "恢复自动匹配歌词", 72, 12);
+        reset.Margin = new Thickness(6, 0, 0, 0);
+        reset.Click += (sender, args) =>
+        {
+            imported = null;
+            importedKey = null;
+            settingsNotice.Text = "已恢复自动匹配";
+            RenderLyrics();
+        };
+        options.Children.Add(reset);
+        settingsNotice = Text(11, "#FFD0DCE5");
+        settingsNotice.Margin = new Thickness(0, 2, 0, 3);
+        settingsNotice.Text = "正值让歌词提前。带字词时间戳的 LRC 可精确高亮。";
+        settings.Children.Add(settingsNotice);
+
+        save.Tick += (sender, args) => SavePreferences();
+        ApplyPreferences();
         poll.Tick += async (sender, args) => await RefreshTrack();
         render.Tick += (sender, args) => RenderLyrics();
         Loaded += async (sender, args) =>
@@ -358,7 +494,139 @@ sealed class Hud : Window
             poll.Stop();
             render.Stop();
             if (lookup != null) lookup.Cancel();
+            if (save.IsEnabled) SavePreferences();
         };
+    }
+
+    static Button ButtonFor(string label, string tip, double width, double size)
+    {
+        return new Button
+        {
+            Content = label, FontSize = size, Width = width, Height = 27, Padding = new Thickness(0),
+            BorderThickness = new Thickness(0), Background = Color("#FF2B3540"),
+            Foreground = Color("#FFE0E8F0"), Cursor = Cursors.Hand, ToolTip = tip
+        };
+    }
+
+    int AddSlider(string label, int min, int max, int step, int initial, string unit, Action<int> set)
+    {
+        int value = Math.Max(min, Math.Min(max, initial));
+        var row = new DockPanel { Height = 29 };
+        settings.Children.Add(row);
+        var name = Text(12, "#FFF0F5FA");
+        name.Width = 108;
+        name.Text = label;
+        row.Children.Add(name);
+        var readout = Text(12, "#FF9AE5BD");
+        readout.Width = 70;
+        readout.TextAlignment = TextAlignment.Right;
+        readout.Text = value + unit;
+        DockPanel.SetDock(readout, Dock.Right);
+        row.Children.Add(readout);
+        var slider = new Slider
+        {
+            Minimum = min, Maximum = max, Value = value, TickFrequency = step, SmallChange = step,
+            LargeChange = step * 5, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center
+        };
+        System.Windows.Automation.AutomationProperties.SetName(slider, label);
+        slider.ValueChanged += (sender, args) =>
+        {
+            int updated = (int)args.NewValue;
+            readout.Text = updated + unit;
+            set(updated);
+            PreferencesChanged();
+        };
+        row.Children.Add(slider);
+        return value;
+    }
+
+    CheckBox AddOption(string label, bool value, Action<bool> set)
+    {
+        var check = new CheckBox
+        {
+            Content = label, IsChecked = value, Foreground = Color("#FFF0F5FA"),
+            Margin = new Thickness(0, 0, 15, 0), VerticalAlignment = VerticalAlignment.Center
+        };
+        RoutedEventHandler changed = (sender, args) =>
+        {
+            set(check.IsChecked == true);
+            PreferencesChanged();
+        };
+        check.Checked += changed;
+        check.Unchecked += changed;
+        return check;
+    }
+
+    void PreferencesChanged()
+    {
+        ApplyPreferences();
+        RenderLyrics();
+        save.Stop();
+        save.Start();
+    }
+
+    void SavePreferences()
+    {
+        save.Stop();
+        try { preferences.Save(); }
+        catch (IOException) { settingsNotice.Text = "设置暂时无法保存"; }
+        catch (UnauthorizedAccessException) { settingsNotice.Text = "设置暂时无法保存"; }
+    }
+
+    void ApplyPreferences()
+    {
+        card.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(
+            (byte)Math.Round(preferences.Background * 255 / 100.0), 21, 27, 34));
+        current.FontSize = preferences.FontSize;
+        current.LineHeight = Math.Ceiling(preferences.FontSize * 1.18);
+        current.MaxHeight = current.LineHeight * 2;
+        next.FontSize = Math.Max(11, Math.Round(preferences.FontSize * 0.56));
+        next.Visibility = preferences.Preview ? Visibility.Visible : Visibility.Collapsed;
+        var layout = (Grid)card.Child;
+        layout.RowDefinitions[2].Height = new GridLength(preferences.Preview ? next.FontSize + 13 : 0);
+        double newHeight = 29 + current.MaxHeight + layout.RowDefinitions[2].Height.Value + 39;
+        if (settings.Visibility == Visibility.Visible) newHeight += 156;
+        double bottom = Top + Height;
+        Height = newHeight;
+        var area = SystemParameters.WorkArea;
+        if (area.Contains(new Point(Left, Top)))
+            Top = Math.Max(area.Top, Math.Min(bottom - newHeight, area.Bottom - newHeight));
+    }
+
+    void ToggleSettings()
+    {
+        settings.Visibility = settings.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        settingsFrame.Visibility = settings.Visibility;
+        ApplyPreferences();
+    }
+
+    void ImportLyrics()
+    {
+        if (track == null) { settingsNotice.Text = "请先在 Spotifast 播放一首歌"; return; }
+        var key = track.Key;
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "为当前曲目选择歌词", Filter = "LRC 歌词 (*.lrc)|*.lrc", CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        if (track == null || track.Key != key) { settingsNotice.Text = "曲目已切换，请重新选择"; return; }
+        try
+        {
+            if (new FileInfo(dialog.FileName).Length > 1024 * 1024)
+            {
+                settingsNotice.Text = "歌词文件超过 1 MB";
+                return;
+            }
+            var result = Lookup.ParseLrc(File.ReadAllText(dialog.FileName, Encoding.UTF8), "导入 LRC");
+            if (result == null) { settingsNotice.Text = "文件中没有可读的时间戳"; return; }
+            imported = result;
+            importedKey = key;
+            settingsNotice.Text = result.lines.Any(line => line.Segments != null)
+                ? "已导入字词时间戳" : "已导入逐行时间戳";
+            RenderLyrics();
+        }
+        catch (IOException) { settingsNotice.Text = "无法读取歌词文件"; }
+        catch (UnauthorizedAccessException) { settingsNotice.Text = "无法读取歌词文件"; }
     }
 
     static TextBlock Text(double size, string color)
@@ -441,20 +709,46 @@ sealed class Hud : Window
 
     void RenderLyrics()
     {
+        var selected = track != null && track.Key == importedKey ? imported : lyrics;
         string trackText = track == null ? "SPOTIFAST · 桌面歌词" : track.Title + "  ·  " + track.Artist;
-        string sourceText = track == null ? "" : (!track.Playing ? "已暂停" : (lyrics == null ? "" : lyrics.Source));
+        string sourceText = track == null ? "" : (!track.Playing ? "已暂停" : (selected == null ? "" : selected.Source));
         string currentText = track == null ? "等待 Spotifast 播放" : status;
         string nextText = "";
-        if (track != null && lyrics != null)
+        int prefix = -1;
+        if (track != null && selected != null)
         {
-            if (lyrics.instrumental) currentText = "纯音乐";
-            else if (lyrics.synced && lyrics.lines.Count > 0)
+            if (selected.instrumental) currentText = "纯音乐";
+            else if (selected.synced && selected.lines.Count > 0)
             {
                 long position = track.Position + (track.Playing ? Math.Min(850, clock.ElapsedMilliseconds) : 0);
                 if (track.Duration > 0) position = Math.Min(track.Duration, position);
-                var lines = lyrics.lines;
+                position += preferences.OffsetMs;
+                var lines = selected.lines;
                 int active = ActiveLine(lines, position);
                 currentText = active < 0 || string.IsNullOrWhiteSpace(lines[active].text) ? "♪" : lines[active].text;
+                if (preferences.Karaoke && active >= 0 && currentText != "♪")
+                {
+                    var line = lines[active];
+                    if (line.Segments != null)
+                    {
+                        prefix = TimedPrefix(line, position);
+                        if (track.Playing) sourceText = "字词同步";
+                    }
+                    else
+                    {
+                        long start = line.at_ms.Value;
+                        long end = active + 1 < lines.Count ? lines[active + 1].at_ms.Value : track.Duration;
+                        if (segmentedText != currentText)
+                        {
+                            segmentedText = currentText;
+                            textElements = StringInfo.ParseCombiningCharacters(currentText);
+                        }
+                        long span = Math.Max(1, Math.Min(end - start, Math.Max(1400, textElements.Length * 420L)));
+                        int count = (int)Math.Min(textElements.Length, (position - start) * textElements.Length / span + 1);
+                        prefix = count == textElements.Length ? currentText.Length : textElements[count];
+                        if (track.Playing) sourceText = "逐字估算";
+                    }
+                }
                 for (int i = active + 1; i < lines.Count; i++)
                 {
                     if (string.IsNullOrWhiteSpace(lines[i].text)) continue;
@@ -466,8 +760,27 @@ sealed class Hud : Window
 
         if (title.Text != trackText) title.Text = trackText;
         if (source.Text != sourceText) source.Text = sourceText;
-        if (current.Text != currentText) current.Text = currentText;
+        if (displayedLine != currentText || displayedPrefix != prefix)
+        {
+            displayedLine = currentText;
+            displayedPrefix = prefix;
+            if (prefix < 0) current.Text = currentText;
+            else
+            {
+                current.Inlines.Clear();
+                current.Inlines.Add(new Run(currentText.Substring(0, prefix)) { Foreground = highlight });
+                current.Inlines.Add(new Run(currentText.Substring(prefix)));
+            }
+        }
         if (next.Text != nextText) next.Text = nextText;
+    }
+
+    public static int TimedPrefix(Line line, long position)
+    {
+        int prefix = line.Segments[0].Start;
+        for (int i = 0; i < line.Segments.Count && line.Segments[i].At <= position; i++)
+            prefix = i + 1 < line.Segments.Count ? line.Segments[i + 1].Start : line.text.Length;
+        return prefix;
     }
 }
 
