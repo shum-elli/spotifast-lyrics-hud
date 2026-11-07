@@ -16,7 +16,7 @@
 - **Microsoft .NET Framework 4.8 或 4.8.1**。Windows 10 1903 及以后包含 4.8，Windows 11 包含 4.8 或 4.8.1。[微软运行库下载](https://dotnet.microsoft.com/download/dotnet-framework/net48)
 - 同一 Windows 账号下运行 Spotifast。已验证 0.17.1，安装位置为 %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe。
 
-点齿轮调整设置，拖动右下角改变窗口大小。配置保存在 exe 旁的 settings.json，升级时保留该文件。ZIP 内的 RUNNING.txt 也包含运行说明。
+解锁后点齿轮调整设置，拖动右下角改变窗口大小。配置保存在 exe 旁的 settings.json，升级时保留该文件。ZIP 内的 RUNNING.txt 也包含运行说明。
 
 ## 歌词
 
