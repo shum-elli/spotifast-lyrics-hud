@@ -27,6 +27,7 @@ Runtime requirements
 Extract this entire ZIP into a writable folder and run Spotifast Lyrics HUD.exe.
 The app creates settings.json beside the EXE. Keep it when upgrading.
 Use the gear button for settings. Drag the bottom-right handle to resize.
+Drag the title, status text, or empty space across the top bar to move the overlay.
 Use the lock button to prevent moving and resizing. The lock state is saved.
 Controls have transparent backgrounds. Only the unlock button is visible while locked.
 While locked, mouse input passes through the lyrics; only the lock icon is clickable.
@@ -52,6 +53,8 @@ $notes = 'Portable Windows build. Extract the ZIP and run Spotifast Lyrics HUD.e
     'Runtime download: https://dotnet.microsoft.com/download/dotnet-framework/net48' +
     [Environment]::NewLine +
     'settings.json is created beside the EXE. Preserve it when upgrading.' +
+    [Environment]::NewLine +
+    'Sharper title text, a unified accent-colour settings panel, and dragging across the top bar.' +
     [Environment]::NewLine +
     'While locked, lyrics pass mouse input through. The lock icon stays clickable without activating the overlay.' +
     [Environment]::NewLine +

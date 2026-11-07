@@ -11,13 +11,28 @@ using System.Windows.Input;
 using System.Windows.Threading;
 static class HudChecks
 {
-    static void Require(bool condition)
+    static void Require(bool condition, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
-        if (!condition) throw new Exception("HUD check failed");
+        if (!condition) throw new Exception("HUD check failed at line " + line);
     }
 
     [STAThread]
-    static void Main()
+    static int Main()
+    {
+        try
+        {
+            RunChecks();
+            return 0;
+        }
+        catch (Exception error)
+        {
+            for (var current = error; current != null; current = current.InnerException)
+                Console.Error.WriteLine(current.GetType().FullName + " — " + current.Message);
+            return 1;
+        }
+    }
+
+    static void RunChecks()
     {
         var lrc = "[offset:100]\n[00:01.00]<00:01.00>你<00:01.50>好<00:02.20>\n[00:03.00]下一句";
         var timed = Lookup.ParseLrc(lrc, "test");
@@ -83,6 +98,10 @@ static class HudChecks
         var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
         Require(serializer.Deserialize<Preferences>(serializer.Serialize(prefs)).Locked);
         var dragTitle = (TextBlock)typeof(Hud).GetField("title", access).GetValue(hud);
+        var header = (Border)typeof(Hud).GetField("headerDragArea", access).GetValue(hud);
+        var headerStatus = (TextBlock)typeof(Hud).GetField("source", access).GetValue(hud);
+        Require(Hud.CanDragHeader(header) && Hud.CanDragHeader(dragTitle) && Hud.CanDragHeader(headerStatus));
+        Require(!Hud.CanDragHeader(lockControl) && !Hud.CanDragHeader(settingsControl));
         Require(dragTitle.Cursor == Cursors.Arrow);
         setLocked.Invoke(hud, new object[] { false });
         Require(grip.IsEnabled && grip.Visibility == Visibility.Visible && dragTitle.Cursor == Cursors.SizeAll);
@@ -186,6 +205,8 @@ static class HudChecks
         ((Button)surface.Content).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         ((DispatcherTimer)typeof(Hud).GetField("save", access).GetValue(hud)).Stop();
         Require(!prefs.Locked && !surface.IsVisible);
+        hud.UpdateLayout();
+        Require(!Hud.CanDragHeader((DependencyObject)play.Content));
         style = (int)getStyle.Invoke(null, new object[] { handle, -20 });
         Require((style & inputFlags) == 0);
         setLocked.Invoke(hud, new object[] { true });

@@ -655,6 +655,7 @@ sealed class Hud : Window
     readonly TextBlock title, source, current, next;
     readonly Border card;
     readonly Border settingsFrame;
+    readonly Border headerDragArea;
     readonly StackPanel settings = new StackPanel();
     readonly StackPanel playbackSettings = new StackPanel();
     readonly StackPanel appearanceSettings = new StackPanel { Visibility = Visibility.Collapsed };
@@ -743,6 +744,8 @@ sealed class Hud : Window
         Topmost = true;
         ShowActivated = false;
         ShowInTaskbar = false;
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
         SourceInitialized += (sender, args) => InitializeWindowInput();
 
@@ -762,7 +765,21 @@ sealed class Hud : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0) });
 
         var header = new DockPanel { LastChildFill = true };
-        layout.Children.Add(header);
+        headerDragArea = new Border
+        {
+            Child = header, Background = Brushes.Transparent,
+            Margin = new Thickness(-19, -10, -13, 0), Padding = new Thickness(19, 10, 13, 0)
+        };
+        headerDragArea.MouseLeftButtonDown += (sender, args) =>
+        {
+            if (!preferences.Locked && args.ButtonState == MouseButtonState.Pressed
+                && CanDragHeader(args.OriginalSource as DependencyObject))
+            {
+                DragMove();
+                args.Handled = true;
+            }
+        };
+        layout.Children.Add(headerDragArea);
         closeButton = ButtonFor("×", "隐藏到托盘", 30, 21);
         closeButton.Click += (sender, args) => Hide();
         DockPanel.SetDock(closeButton, Dock.Right);
@@ -797,18 +814,13 @@ sealed class Hud : Window
         DockPanel.SetDock(source, Dock.Right);
         header.Children.Add(source);
         title = Text(12, "#FF9AE5BD");
-        title.FontWeight = FontWeights.SemiBold;
-        title.Effect = new System.Windows.Media.Effects.DropShadowEffect
-        {
-            BlurRadius = 4, ShadowDepth = 1, Opacity = 0.8
-        };
+        title.FontWeight = FontWeights.Medium;
+        TextOptions.SetTextFormattingMode(title, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(title, TextRenderingMode.Grayscale);
+        TextOptions.SetTextHintingMode(title, TextHintingMode.Fixed);
         title.Cursor = Cursors.SizeAll;
         title.ToolTip = "按住拖动浮窗";
         title.Background = Brushes.Transparent;
-        title.MouseLeftButtonDown += (sender, args) =>
-        {
-            if (!preferences.Locked && args.ButtonState == MouseButtonState.Pressed) DragMove();
-        };
         header.Children.Add(title);
 
         current = Text(27, "#FFF6FAFC");
@@ -857,22 +869,25 @@ sealed class Hud : Window
         Grid.SetRowSpan(resizeGrip, 4);
         layout.Children.Add(resizeGrip);
 
-        settings.Margin = new Thickness(10, 5, 10, 5);
+        settings.Margin = new Thickness(14, 12, 14, 12);
         settingsFrame = new Border
         {
-            Child = settings, Background = Color("#F026303A"), CornerRadius = new CornerRadius(8),
+            Child = settings, Background = Color("#F418202B"), CornerRadius = new CornerRadius(12),
+            BorderBrush = Color("#FF344254"), BorderThickness = new Thickness(1),
             Visibility = Visibility.Collapsed
         };
+        settingsFrame.Resources["AccentBrush"] = Color("#FF9AE5BD");
+        using (var theme = typeof(Hud).Assembly.GetManifestResourceStream("HUD.SettingsTheme"))
+            settingsFrame.Resources.MergedDictionaries.Add((ResourceDictionary)System.Windows.Markup.XamlReader.Load(theme));
         Grid.SetRow(settingsFrame, 4);
         layout.Children.Add(settingsFrame);
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 5) };
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
         settings.Children.Add(tabs);
-        playbackTab = ButtonFor("歌词", "歌词与同步设置", 72, 12);
-        appearanceTab = ButtonFor("外观", "字体、颜色与边框设置", 72, 12);
+        playbackTab = PanelButton("歌词", "歌词与同步设置", 80);
+        appearanceTab = PanelButton("外观", "字体、颜色与边框设置", 80);
         appearanceTab.Margin = new Thickness(6, 0, 0, 0);
         playbackTab.Click += (sender, args) => SelectTab(false);
         appearanceTab.Click += (sender, args) => SelectTab(true);
-        playbackTab.Background = Color("#FF38634F");
         tabs.Children.Add(playbackTab);
         tabs.Children.Add(appearanceTab);
         settings.Children.Add(playbackSettings);
@@ -885,15 +900,17 @@ sealed class Hud : Window
         preferences.OffsetMs = AddSlider(playbackSettings, "歌词提前量", -2000, 2000, 50, preferences.OffsetMs, " ms",
             value => preferences.OffsetMs = value);
 
-        var options = new WrapPanel { Margin = new Thickness(0, 6, 0, 3) };
+        var options = new WrapPanel { Margin = new Thickness(0, 10, 0, 12) };
         playbackSettings.Children.Add(options);
         options.Children.Add(AddOption("卡拉 OK 高亮", preferences.Karaoke, value => preferences.Karaoke = value));
         options.Children.Add(AddOption("显示下一句", preferences.Preview, value => preferences.Preview = value));
         options.Children.Add(AddOption("显示简体中文", preferences.SimplifiedLyrics, value => preferences.SimplifiedLyrics = value));
-        var import = ButtonFor("导入当前曲目 LRC", "支持带字词时间戳的增强 LRC", 118, 12);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 9) };
+        playbackSettings.Children.Add(actions);
+        var import = PanelButton("导入当前曲目 LRC", "支持带字词时间戳的增强 LRC", 164);
         import.Click += (sender, args) => ImportLyrics();
-        options.Children.Add(import);
-        var reset = ButtonFor("清除导入", "恢复自动匹配歌词", 72, 12);
+        actions.Children.Add(import);
+        var reset = PanelButton("清除导入", "恢复自动匹配歌词", 90);
         reset.Margin = new Thickness(6, 0, 0, 0);
         reset.Click += (sender, args) =>
         {
@@ -902,11 +919,11 @@ sealed class Hud : Window
             settingsNotice.Text = "已恢复自动匹配";
             RenderLyrics();
         };
-        options.Children.Add(reset);
-        settingsNotice = Text(11, "#FFD0DCE5");
+        actions.Children.Add(reset);
+        settingsNotice = Text(11, "#FF8F9FB3");
         settingsNotice.Margin = new Thickness(0, 2, 0, 3);
         settingsNotice.Text = Preferences.LoadError == null
-            ? "正值让歌词提前。收起设置后可拖动右下角调整窗口。"
+            ? "提前量为正时歌词提前；拖动顶部可移动浮窗。"
             : "配置读写失败，请检查程序目录权限。";
         if (Preferences.LoadError != null) settingsNotice.ToolTip = Preferences.LoadError;
         playbackSettings.Children.Add(settingsNotice);
@@ -953,6 +970,26 @@ sealed class Hud : Window
         LocationChanged += (sender, args) => SynchronizeUnlockSurface();
         StateChanged += (sender, args) => SynchronizeUnlockSurface();
         lockButton.LayoutUpdated += (sender, args) => SynchronizeUnlockSurface();
+    }
+
+    public static bool CanDragHeader(DependencyObject target)
+    {
+        while (target != null)
+        {
+            if (target is ButtonBase) return false;
+            var content = target as FrameworkContentElement;
+            target = content != null ? content.Parent : VisualTreeHelper.GetParent(target);
+        }
+        return true;
+    }
+
+    Button PanelButton(string label, string tip, double width)
+    {
+        return new Button
+        {
+            Content = label, ToolTip = tip, Width = width,
+            Style = (Style)settingsFrame.Resources["HudPanelButton"]
+        };
     }
 
     static Button ButtonFor(string label, string tip, double width, double size)
@@ -1313,11 +1350,11 @@ sealed class Hud : Window
 
     void BuildAppearance()
     {
-        var fontRow = new DockPanel { Height = 30 };
+        var fontRow = new DockPanel { Height = 38 };
         appearanceSettings.Children.Add(fontRow);
-        var fontLabel = Text(12, "#FFF0F5FA");
+        var fontLabel = Text(13, "#FFD1DCE9");
         fontLabel.Text = "歌词字体";
-        fontLabel.Width = 108;
+        fontLabel.Width = 112;
         fontRow.Children.Add(fontLabel);
         var names = Fonts.SystemFontFamilies.Select(f => f.Source).Distinct()
             .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase).ToList();
@@ -1326,7 +1363,8 @@ sealed class Hud : Window
         var fonts = new ComboBox
         {
             ItemsSource = names, SelectedItem = preferences.FontName,
-            MaxDropDownHeight = 240, Height = 24, IsTextSearchEnabled = true,
+            MaxDropDownHeight = 240, Height = 32, IsTextSearchEnabled = true,
+            Style = (Style)settingsFrame.Resources["HudComboBox"],
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         System.Windows.Automation.AutomationProperties.SetName(fonts, "歌词字体");
@@ -1338,7 +1376,7 @@ sealed class Hud : Window
         };
         fontRow.Children.Add(fonts);
 
-        var colors = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2, Margin = new Thickness(0, 4, 0, 4) };
+        var colors = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2, Margin = new Thickness(-3, 7, -3, 8) };
         appearanceSettings.Children.Add(colors);
         preferences.BackgroundColor = AddColor(colors, "背景色", preferences.BackgroundColor, "#151B22", value => preferences.BackgroundColor = value);
         preferences.TextColor = AddColor(colors, "歌词色", preferences.TextColor, "#F6FAFC", value => preferences.TextColor = value);
@@ -1356,8 +1394,9 @@ sealed class Hud : Window
     string AddColor(Panel parent, string label, string initial, string fallback, Action<string> set)
     {
         var value = initial != null && Regex.IsMatch(initial, @"^#[0-9a-fA-F]{6}$") ? initial : fallback;
-        var button = ButtonFor(label, "点击选择" + label, double.NaN, 12);
-        button.Margin = new Thickness(0, 1, 5, 2);
+        var button = PanelButton(label, "点击选择" + label, double.NaN);
+        button.Margin = new Thickness(3, 3, 3, 3);
+        button.Height = 34;
         var contents = new StackPanel { Orientation = Orientation.Horizontal };
         var swatch = new Border
         {
@@ -1401,13 +1440,14 @@ sealed class Hud : Window
     int AddSlider(Panel parent, string label, int min, int max, int step, int initial, string unit, Action<int> set)
     {
         int value = Math.Max(min, Math.Min(max, initial));
-        var row = new DockPanel { Height = 29 };
+        var row = new DockPanel { Height = 34 };
         parent.Children.Add(row);
-        var name = Text(12, "#FFF0F5FA");
-        name.Width = 108;
+        var name = Text(13, "#FFD1DCE9");
+        name.Width = 112;
         name.Text = label;
         row.Children.Add(name);
-        var readout = Text(12, "#FF9AE5BD");
+        var readout = Text(12, "#FFD1DCE9");
+        readout.Foreground = highlight;
         readout.Width = 70;
         readout.TextAlignment = TextAlignment.Right;
         readout.Text = value + unit;
@@ -1417,7 +1457,8 @@ sealed class Hud : Window
         {
             Minimum = min, Maximum = max, Value = value, TickFrequency = step, SmallChange = step,
             LargeChange = step * 5, IsSnapToTickEnabled = true, IsMoveToPointEnabled = true,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            Style = (Style)settingsFrame.Resources["HudSlider"]
         };
         System.Windows.Automation.AutomationProperties.SetName(slider, label);
         slider.ValueChanged += (sender, args) =>
@@ -1435,8 +1476,8 @@ sealed class Hud : Window
     {
         var check = new CheckBox
         {
-            Content = label, IsChecked = value, Foreground = Color("#FFF0F5FA"),
-            Margin = new Thickness(0, 0, 15, 0), VerticalAlignment = VerticalAlignment.Center
+            Content = label, IsChecked = value, Style = (Style)settingsFrame.Resources["HudCheckBox"],
+            Margin = new Thickness(0, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center
         };
         RoutedEventHandler changed = (sender, args) =>
         {
@@ -1482,6 +1523,7 @@ sealed class Hud : Window
         current.Foreground = textBrush;
         next.Foreground = new SolidColorBrush(textBrush.Color) { Opacity = 0.72 };
         highlight.Color = accent;
+        settingsFrame.Resources["AccentBrush"] = new SolidColorBrush(accent);
         title.Foreground = highlight;
         lyricColor = textBrush.Color;
         if (glyphPaint != null)
@@ -1513,13 +1555,23 @@ sealed class Hud : Window
         resizeGrip.Visibility = settingsOpen || preferences.Locked ? Visibility.Collapsed : Visibility.Visible;
         resizeGrip.IsEnabled = !preferences.Locked;
         title.Cursor = preferences.Locked ? Cursors.Arrow : Cursors.SizeAll;
-        title.ToolTip = preferences.Locked ? "窗口已锁定" : "按住拖动浮窗";
+        headerDragArea.Cursor = preferences.Locked ? Cursors.Arrow : Cursors.SizeAll;
+        title.ToolTip = preferences.Locked ? "窗口已锁定" : "拖动顶部移动浮窗";
         lockButton.Content = preferences.Locked ? "🔒" : "🔓";
         lockButton.ToolTip = preferences.Locked
             ? "点击解锁窗口，也可用 Ctrl+Alt+L 或托盘"
             : "锁定并穿透鼠标（Ctrl+Alt+L）";
         if (trayLock != null) trayLock.Checked = preferences.Locked;
         if (traySettings != null) traySettings.Enabled = !preferences.Locked;
+        bool appearanceSelected = appearanceSettings.Visibility == Visibility.Visible;
+        var tabAccent = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, accent.R, accent.G, accent.B));
+        playbackTab.Background = appearanceSelected ? Brushes.Transparent : tabAccent;
+        appearanceTab.Background = appearanceSelected ? tabAccent : Brushes.Transparent;
+        playbackTab.Foreground = appearanceSelected ? Color("#FF9AABC0") : highlight;
+        appearanceTab.Foreground = appearanceSelected ? highlight : Color("#FF9AABC0");
+        var tabBorder = new SolidColorBrush(System.Windows.Media.Color.FromArgb(85, accent.R, accent.G, accent.B));
+        playbackTab.BorderBrush = appearanceSelected ? Brushes.Transparent : tabBorder;
+        appearanceTab.BorderBrush = appearanceSelected ? tabBorder : Brushes.Transparent;
         double headerHeight = settingsOpen ? 42 : Math.Max(29, preferences.TitleFontSize + 10);
         double previewHeight = preferences.Preview ? (settingsOpen ? 42 : next.FontSize + 13) : 0;
         layout.RowDefinitions[0].Height = new GridLength(headerHeight);
@@ -1533,8 +1585,8 @@ sealed class Hud : Window
         if (settingsOpen)
         {
             var page = appearanceSettings.Visibility == Visibility.Visible ? appearanceSettings : playbackSettings;
-            page.Measure(new Size(Math.Max(0, Width - 52 - preferences.BorderWidth * 2), double.PositiveInfinity));
-            settingsHeight = page.DesiredSize.Height + 42;
+            page.Measure(new Size(Math.Max(0, Width - 62 - preferences.BorderWidth * 2), double.PositiveInfinity));
+            settingsHeight = page.DesiredSize.Height + 68;
             settings.InvalidateMeasure();
             settingsFrame.InvalidateMeasure();
         }
@@ -1559,8 +1611,6 @@ sealed class Hud : Window
     {
         playbackSettings.Visibility = appearance ? Visibility.Collapsed : Visibility.Visible;
         appearanceSettings.Visibility = appearance ? Visibility.Visible : Visibility.Collapsed;
-        playbackTab.Background = Color(appearance ? "#FF2B3540" : "#FF38634F");
-        appearanceTab.Background = Color(appearance ? "#FF38634F" : "#FF2B3540");
         ApplyPreferences();
     }
 

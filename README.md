@@ -1,5 +1,9 @@
 # Spotifast Lyrics HUD
 
+![Spotifast Lyrics HUD 界面预览](assets/promo.png)
+
+真实控件渲染，使用演示曲目信息。
+
 为 Spotifast 提供独立置顶歌词、渐进高亮、简体转换及字体、颜色和窗口设置。C# / WPF。
 
 浮窗底部支持上一曲、播放／暂停、下一曲。操作按钮使用透明背景，悬停时通过图标亮度反馈。右上角锁按钮可锁定移动和缩放，锁定状态自动保存。锁定后只保留解锁按钮，设置、关闭、播放控制及翻句按钮全部隐藏。
@@ -17,6 +21,8 @@
 - 同一 Windows 账号下运行 Spotifast。已验证 0.17.1，安装位置为 %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe。
 
 解锁后点齿轮调整设置，拖动右下角改变窗口大小。配置保存在 exe 旁的 settings.json，升级时保留该文件。ZIP 内的 RUNNING.txt 也包含运行说明。
+
+顶部的标题、状态文字及空白区域都支持拖动，操作按钮保留各自的点击功能。设置面板的滑杆、下拉框和复选框统一跟随当前强调色。
 
 ## 歌词
 
