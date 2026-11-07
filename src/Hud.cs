@@ -29,6 +29,45 @@ sealed class Track
     public string LeadArtist { get { return Artist.Split(new[] { ", " }, StringSplitOptions.None)[0]; } }
 }
 
+sealed class PlaybackTimeline
+{
+    double anchor, sampledAt, advancedAt, rate;
+    long previousPosition;
+    bool ready, playing;
+
+    public double Position(double now)
+    {
+        return anchor + (playing ? Math.Min(1200, Math.Max(0, now - sampledAt)) * rate : 0);
+    }
+
+    public void Update(Track track, double now, bool changed)
+    {
+        if (track == null)
+        {
+            ready = false;
+            return;
+        }
+
+        double predicted = Position(now);
+        double error = track.Position - predicted;
+        bool advanced = track.Position != previousPosition;
+        bool jumped = advanced && (track.Position < previousPosition - 120 || Math.Abs(error) > 450);
+        bool reset = !ready || changed || playing != track.Playing || jumped;
+        if (reset || advanced) advancedAt = now;
+
+        anchor = reset || !track.Playing ? track.Position : predicted;
+        // Correct small discrepancies by changing speed briefly so the colour edge never moves backwards.
+        double targetRate = 1 + Math.Max(-0.15, Math.Min(0.15, error / 2200));
+        if (reset) rate = 1;
+        else if (now - advancedAt > 950) rate = 0;
+        else rate = rate == 0 ? targetRate : (rate + targetRate) / 2;
+        sampledAt = now;
+        previousPosition = track.Position;
+        playing = track.Playing;
+        ready = true;
+    }
+}
+
 sealed class Line
 {
     string simplified;
@@ -482,20 +521,19 @@ sealed class Hud : Window
     readonly TextBlock settingsNotice;
     readonly Preferences preferences = Preferences.Load();
     readonly SolidColorBrush highlight = new SolidColorBrush();
-    readonly GradientStop gradientOn = new GradientStop();
-    readonly GradientStop gradientOff = new GradientStop();
-    readonly LinearGradientBrush sweep;
     readonly DispatcherTimer save = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
     readonly DispatcherTimer poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
-    readonly DispatcherTimer render = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
-    readonly Stopwatch clock = new Stopwatch();
+    readonly DispatcherTimer render = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+    readonly Stopwatch clock = Stopwatch.StartNew();
+    readonly PlaybackTimeline timeline = new PlaybackTimeline();
     Track track;
     Lyrics lyrics;
     Lyrics imported;
     string importedKey;
     string displayedLine;
-    int displayedPrefix = -1;
-    int displayedEnd = -1;
+    bool displayedHighlight;
+    LinearGradientBrush[] glyphPaint;
+    System.Windows.Media.Color lyricColor;
     string segmentedText;
     int[] textElements;
     string status = "";
@@ -509,8 +547,6 @@ sealed class Hud : Window
 
     public Hud()
     {
-        sweep = new LinearGradientBrush(new GradientStopCollection { gradientOn, gradientOff },
-            new Point(0, 0.5), new Point(1, 0.5));
         Title = "Spotifast 歌词浮窗";
         Width = ClampWidth(preferences.WindowWidth);
         Height = 160;
@@ -927,8 +963,15 @@ sealed class Hud : Window
         next.Foreground = new SolidColorBrush(textBrush.Color) { Opacity = 0.72 };
         highlight.Color = accent;
         title.Foreground = highlight;
-        gradientOn.Color = accent;
-        gradientOff.Color = textBrush.Color;
+        lyricColor = textBrush.Color;
+        if (glyphPaint != null)
+        {
+            foreach (var brush in glyphPaint)
+            {
+                brush.GradientStops[0].Color = accent;
+                brush.GradientStops[1].Color = lyricColor;
+            }
+        }
         var font = new FontFamily(preferences.FontName + ", Microsoft YaHei UI, Segoe UI");
         current.FontFamily = font;
         next.FontFamily = font;
@@ -1037,7 +1080,7 @@ sealed class Hud : Window
         if (latest != null) misses = 0;
         bool changed = (latest == null ? null : latest.Key) != (track == null ? null : track.Key);
         track = latest;
-        clock.Restart();
+        timeline.Update(latest, clock.Elapsed.TotalMilliseconds, changed);
         if (changed)
         {
             if (lookup != null) lookup.Cancel();
@@ -1114,7 +1157,7 @@ sealed class Hud : Window
             if (selected.instrumental) currentText = "纯音乐";
             else if (selected.synced && selected.lines.Count > 0)
             {
-                long position = track.Position + (track.Playing ? Math.Min(850, clock.ElapsedMilliseconds) : 0);
+                long position = (long)timeline.Position(clock.Elapsed.TotalMilliseconds);
                 if (track.Duration > 0) position = Math.Min(track.Duration, position);
                 position += preferences.OffsetMs;
                 var lines = selected.lines;
@@ -1136,11 +1179,7 @@ sealed class Hud : Window
                     {
                         long start = line.at_ms.Value;
                         long end = active + 1 < lines.Count ? lines[active + 1].at_ms.Value : track.Duration;
-                        if (segmentedText != currentText)
-                        {
-                            segmentedText = currentText;
-                            textElements = StringInfo.ParseCombiningCharacters(currentText);
-                        }
+                        PrepareTextElements(currentText);
                         long span = Math.Max(1, Math.Min(end - start, Math.Max(1400, textElements.Length * 420L)));
                         double progress = Math.Min(textElements.Length, (position - start) * (double)textElements.Length / span);
                         int count = (int)progress;
@@ -1172,29 +1211,58 @@ sealed class Hud : Window
 
         if (title.Text != trackText) title.Text = trackText;
         if (source.Text != sourceText) source.Text = sourceText;
-        if (fillEnd >= 0)
+        DrawCurrentLine(currentText, prefix, fillEnd, fraction);
+        if (next.Text != nextText) next.Text = nextText;
+    }
+
+    void PrepareTextElements(string text)
+    {
+        if (segmentedText == text) return;
+        segmentedText = text;
+        textElements = StringInfo.ParseCombiningCharacters(text);
+    }
+
+    void DrawCurrentLine(string text, int prefix, int fillEnd, double fraction)
+    {
+        bool highlighting = prefix >= 0;
+        if (displayedLine != text || displayedHighlight != highlighting)
         {
-            gradientOn.Offset = fraction * 1.16 - 0.16;
-            gradientOff.Offset = fraction * 1.16;
-        }
-        if (displayedLine != currentText || displayedPrefix != prefix || displayedEnd != fillEnd)
-        {
-            displayedLine = currentText;
-            displayedPrefix = prefix;
-            displayedEnd = fillEnd;
-            if (prefix < 0) current.Text = currentText;
-            else
+            displayedLine = text;
+            displayedHighlight = highlighting;
+            if (!highlighting)
             {
-                current.Inlines.Clear();
-                if (prefix > 0)
-                    current.Inlines.Add(new Run(currentText.Substring(0, prefix)) { Foreground = highlight });
-                if (fillEnd > prefix)
-                    current.Inlines.Add(new Run(currentText.Substring(prefix, fillEnd - prefix)) { Foreground = sweep });
-                int remaining = Math.Max(prefix, fillEnd);
-                if (remaining < currentText.Length) current.Inlines.Add(new Run(currentText.Substring(remaining)));
+                current.Text = text;
+                glyphPaint = null;
+                return;
+            }
+
+            PrepareTextElements(text);
+            current.Inlines.Clear();
+            glyphPaint = new LinearGradientBrush[textElements.Length];
+            for (int i = 0; i < glyphPaint.Length; i++)
+            {
+                int start = textElements[i];
+                int end = i + 1 < textElements.Length ? textElements[i + 1] : text.Length;
+                var stops = new GradientStopCollection
+                {
+                    new GradientStop(highlight.Color, -0.16), new GradientStop(lyricColor, 0)
+                };
+                var paint = new LinearGradientBrush(stops, new Point(0, 0.5), new Point(1, 0.5));
+                glyphPaint[i] = paint;
+                current.Inlines.Add(new Run(text.Substring(start, end - start)) { Foreground = paint });
             }
         }
-        if (next.Text != nextText) next.Text = nextText;
+        if (!highlighting) return;
+
+        for (int i = 0; i < glyphPaint.Length; i++)
+        {
+            int start = textElements[i];
+            double edge = (start < prefix ? 1 : start < fillEnd ? fraction : 0) * 1.16;
+            var stops = glyphPaint[i].GradientStops;
+            if (stops[1].Offset == edge) continue;
+            stops[0].Offset = edge - 0.16;
+            stops[1].Offset = edge;
+        }
     }
 
     Lyrics CurrentLyrics()
