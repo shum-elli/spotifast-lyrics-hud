@@ -225,6 +225,31 @@ static class Spotifast
     public static readonly string Root = Path.Combine(Local, @"paolino\spotifast");
     static readonly string Executable = Path.Combine(Local, @"Programs\Spotifast\spotifast.exe");
 
+    public static void Send(string command)
+    {
+        if (command != "previous" && command != "play-pause" && command != "next")
+            throw new ArgumentException("Unknown playback command.", "command");
+        if (!File.Exists(Executable)) throw new IOException("找不到 Spotifast，请先安装并启动。");
+        var start = new ProcessStartInfo(Executable, command)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        using (var process = Process.Start(start))
+        {
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(2000))
+            {
+                try { process.Kill(); }
+                catch (InvalidOperationException) { }
+                throw new IOException("Spotifast 暂未响应播放控制。");
+            }
+            if (!Task.WaitAll(new Task[] { output, error }, 200) || process.ExitCode != 0)
+                throw new IOException("播放控制失败，请确认 Spotifast 已启动。");
+        }
+    }
+
     public static Track Read()
     {
         if (!File.Exists(Executable)) return null;
@@ -553,6 +578,7 @@ sealed class Preferences
     public int WindowHeight { get; set; }
     public int TitleFontSize { get; set; }
     public bool SimplifiedLyrics { get; set; }
+    public bool Locked { get; set; }
 
     public Preferences()
     {
@@ -631,6 +657,7 @@ sealed class Hud : Window
     readonly StackPanel playbackSettings = new StackPanel();
     readonly StackPanel appearanceSettings = new StackPanel { Visibility = Visibility.Collapsed };
     readonly Button playbackTab, appearanceTab;
+    readonly Button lockButton, previousButton, playButton, nextButton;
     readonly Thumb resizeGrip;
     readonly StackPanel plainNavigation;
     readonly TextBlock settingsNotice;
@@ -658,6 +685,11 @@ sealed class Hud : Window
     int plainIndex;
     DateTime retryAt = DateTime.MaxValue;
     DateTime cacheCheckAt = DateTime.MaxValue;
+    System.Windows.Forms.NotifyIcon tray;
+    System.Windows.Forms.ContextMenuStrip trayMenu;
+    System.Drawing.Icon trayIcon;
+    System.Windows.Forms.ToolStripMenuItem trayShow, trayLock, trayPrevious, trayPlay, trayNext;
+    bool transportBusy;
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
@@ -675,7 +707,7 @@ sealed class Hud : Window
         Background = Brushes.Transparent;
         Topmost = true;
         ShowActivated = false;
-        ShowInTaskbar = true;
+        ShowInTaskbar = false;
         FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
 
         card = new Border
@@ -690,12 +722,13 @@ sealed class Hud : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0) });
 
         var header = new DockPanel { LastChildFill = true };
         layout.Children.Add(header);
-        var close = ButtonFor("×", "关闭浮窗", 30, 21);
-        close.Click += (sender, args) => Close();
+        var close = ButtonFor("×", "隐藏到托盘", 30, 21);
+        close.Click += (sender, args) => Hide();
         DockPanel.SetDock(close, Dock.Right);
         header.Children.Add(close);
         var gear = ButtonFor("⚙", "歌词设置", 30, 18);
@@ -703,6 +736,12 @@ sealed class Hud : Window
         gear.Click += (sender, args) => ToggleSettings();
         DockPanel.SetDock(gear, Dock.Right);
         header.Children.Add(gear);
+        lockButton = ButtonFor("🔓", "锁定窗口位置和大小", 30, 14);
+        lockButton.FontFamily = new FontFamily("Segoe UI Emoji");
+        lockButton.Margin = new Thickness(0, 0, 6, 0);
+        lockButton.Click += (sender, args) => SetLocked(!preferences.Locked);
+        DockPanel.SetDock(lockButton, Dock.Right);
+        header.Children.Add(lockButton);
 
         plainNavigation = new StackPanel
         {
@@ -732,7 +771,7 @@ sealed class Hud : Window
         title.Background = Brushes.Transparent;
         title.MouseLeftButtonDown += (sender, args) =>
         {
-            if (args.ButtonState == MouseButtonState.Pressed) DragMove();
+            if (!preferences.Locked && args.ButtonState == MouseButtonState.Pressed) DragMove();
         };
         header.Children.Add(title);
 
@@ -755,8 +794,25 @@ sealed class Hud : Window
         next.TextAlignment = TextAlignment.Center;
         Grid.SetRow(next, 2);
         layout.Children.Add(next);
+        var transport = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        previousButton = ButtonFor("⏮", "上一曲", 36, 16);
+        playButton = ButtonFor("▶", "播放", 40, 16);
+        nextButton = ButtonFor("⏭", "下一曲", 36, 16);
+        playButton.Margin = new Thickness(6, 0, 6, 0);
+        previousButton.Click += async (sender, args) => await SendPlayback("previous");
+        playButton.Click += async (sender, args) => await SendPlayback("play-pause");
+        nextButton.Click += async (sender, args) => await SendPlayback("next");
+        transport.Children.Add(previousButton);
+        transport.Children.Add(playButton);
+        transport.Children.Add(nextButton);
+        Grid.SetRow(transport, 3);
+        layout.Children.Add(transport);
         resizeGrip = CreateResizeGrip();
-        Grid.SetRowSpan(resizeGrip, 3);
+        Grid.SetRowSpan(resizeGrip, 4);
         layout.Children.Add(resizeGrip);
 
         settings.Margin = new Thickness(10, 5, 10, 5);
@@ -765,7 +821,7 @@ sealed class Hud : Window
             Child = settings, Background = Color("#F026303A"), CornerRadius = new CornerRadius(8),
             Visibility = Visibility.Collapsed
         };
-        Grid.SetRow(settingsFrame, 3);
+        Grid.SetRow(settingsFrame, 4);
         layout.Children.Add(settingsFrame);
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 5) };
         settings.Children.Add(tabs);
@@ -820,6 +876,7 @@ sealed class Hud : Window
         render.Tick += (sender, args) => RenderLyrics();
         Loaded += async (sender, args) =>
         {
+            SetupTray();
             RenderLyrics();
             poll.Start();
             render.Start();
@@ -832,6 +889,19 @@ sealed class Hud : Window
             render.Stop();
             if (lookup != null) lookup.Cancel();
             if (save.IsEnabled) SavePreferences();
+            if (tray != null)
+            {
+                tray.Visible = false;
+                tray.Dispose();
+                trayMenu.Dispose();
+                trayIcon.Dispose();
+            }
+        };
+        IsVisibleChanged += (sender, args) =>
+        {
+            if (IsVisible && IsLoaded) render.Start();
+            else render.Stop();
+            if (trayShow != null) trayShow.Text = IsVisible ? "隐藏歌词" : "显示歌词";
         };
     }
 
@@ -845,6 +915,99 @@ sealed class Hud : Window
         };
     }
 
+    void SetupTray()
+    {
+        if (tray != null) return;
+        using (var stream = typeof(Hud).Assembly.GetManifestResourceStream("HUD.Icon"))
+        using (var icon = new System.Drawing.Icon(stream))
+            trayIcon = (System.Drawing.Icon)icon.Clone();
+        trayMenu = new System.Windows.Forms.ContextMenuStrip();
+        trayShow = new System.Windows.Forms.ToolStripMenuItem("隐藏歌词");
+        trayShow.Click += (sender, args) => { if (IsVisible) Hide(); else ShowFromTray(); };
+        trayLock = new System.Windows.Forms.ToolStripMenuItem("锁定窗口") { Checked = preferences.Locked };
+        trayLock.Click += (sender, args) => SetLocked(!preferences.Locked);
+        trayPrevious = new System.Windows.Forms.ToolStripMenuItem("上一曲");
+        trayPlay = new System.Windows.Forms.ToolStripMenuItem("播放");
+        trayNext = new System.Windows.Forms.ToolStripMenuItem("下一曲");
+        trayPrevious.Click += async (sender, args) => await SendPlayback("previous");
+        trayPlay.Click += async (sender, args) => await SendPlayback("play-pause");
+        trayNext.Click += async (sender, args) => await SendPlayback("next");
+        var settingsItem = new System.Windows.Forms.ToolStripMenuItem("设置");
+        settingsItem.Click += (sender, args) =>
+        {
+            ShowFromTray();
+            if (settingsFrame.Visibility != Visibility.Visible) ToggleSettings();
+        };
+        var exit = new System.Windows.Forms.ToolStripMenuItem("退出");
+        exit.Click += (sender, args) => Close();
+        trayMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[]
+        {
+            trayShow, trayLock, settingsItem, new System.Windows.Forms.ToolStripSeparator(),
+            trayPrevious, trayPlay, trayNext, new System.Windows.Forms.ToolStripSeparator(), exit
+        });
+        tray = new System.Windows.Forms.NotifyIcon
+        {
+            Icon = trayIcon, Text = "Spotifast Lyrics HUD", ContextMenuStrip = trayMenu, Visible = true
+        };
+        tray.DoubleClick += (sender, args) => ShowFromTray();
+        UpdateTransport();
+    }
+
+    public void ShowFromTray()
+    {
+        if (closed) return;
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    void SetLocked(bool locked)
+    {
+        preferences.Locked = locked;
+        PreferencesChanged();
+    }
+
+    async Task SendPlayback(string command)
+    {
+        if (transportBusy || closed) return;
+        transportBusy = true;
+        UpdateTransport();
+        try
+        {
+            await Task.Run(() => Spotifast.Send(command));
+            if (!closed) await RefreshTrack();
+        }
+        catch (Exception error)
+        {
+            if (!closed && tray != null)
+                tray.ShowBalloonTip(3500, "Spotifast 播放控制", error.Message, System.Windows.Forms.ToolTipIcon.Warning);
+        }
+        finally
+        {
+            transportBusy = false;
+            if (!closed) UpdateTransport();
+        }
+    }
+
+    void UpdateTransport()
+    {
+        bool enabled = track != null && !transportBusy;
+        bool playing = track != null && track.Playing;
+        string label = playing ? "⏸" : "▶";
+        if (!Equals(playButton.Content, label)) playButton.Content = label;
+        playButton.ToolTip = playing ? "暂停" : "播放";
+        previousButton.IsEnabled = enabled;
+        playButton.IsEnabled = enabled;
+        nextButton.IsEnabled = enabled;
+        if (trayPlay != null)
+        {
+            trayPlay.Text = playing ? "暂停" : "播放";
+            trayPlay.Enabled = enabled;
+            trayPrevious.Enabled = enabled;
+            trayNext.Enabled = enabled;
+        }
+    }
+
     static double ClampWidth(double width)
     {
         double limit = Math.Min(1600, SystemParameters.WorkArea.Width - 16);
@@ -854,8 +1017,8 @@ sealed class Hud : Window
     double MinimumHudHeight()
     {
         return Math.Max(29, preferences.TitleFontSize + 10)
-            + current.LineHeight + (preferences.Preview ? next.FontSize + 13 : 0)
-            + 22 + preferences.BorderWidth * 2;
+            + current.LineHeight * 2 + (preferences.Preview ? next.FontSize + 13 : 0)
+            + 56 + preferences.BorderWidth * 2;
     }
 
     Thumb CreateResizeGrip()
@@ -885,18 +1048,21 @@ sealed class Hud : Window
         Matrix fromPixels = Matrix.Identity;
         grip.DragStarted += (sender, args) =>
         {
+            if (preferences.Locked) return;
             fromPixels = PresentationSource.FromVisual(this).CompositionTarget.TransformFromDevice;
             start = fromPixels.Transform(PointToScreen(Mouse.GetPosition(this)));
             original = new Size(Width, Height);
         };
         grip.DragDelta += (sender, args) =>
         {
+            if (preferences.Locked) return;
             var delta = fromPixels.Transform(PointToScreen(Mouse.GetPosition(this))) - start;
             Width = ClampWidth(original.Width + delta.X);
             Height = Math.Max(MinimumHudHeight(), Math.Min(SystemParameters.WorkArea.Height - 16, original.Height + delta.Y));
         };
         grip.DragCompleted += (sender, args) =>
         {
+            if (preferences.Locked) return;
             if (args.Canceled)
             {
                 Width = original.Width;
@@ -1104,13 +1270,19 @@ sealed class Hud : Window
         next.Visibility = preferences.Preview ? Visibility.Visible : Visibility.Collapsed;
         var layout = (Grid)card.Child;
         bool settingsOpen = settingsFrame.Visibility == Visibility.Visible;
-        resizeGrip.Visibility = settingsOpen ? Visibility.Collapsed : Visibility.Visible;
+        resizeGrip.Visibility = settingsOpen || preferences.Locked ? Visibility.Collapsed : Visibility.Visible;
+        resizeGrip.IsEnabled = !preferences.Locked;
+        title.Cursor = preferences.Locked ? Cursors.Arrow : Cursors.SizeAll;
+        title.ToolTip = preferences.Locked ? "窗口已锁定" : "按住拖动浮窗";
+        lockButton.Content = preferences.Locked ? "🔒" : "🔓";
+        lockButton.ToolTip = preferences.Locked ? "解锁窗口位置和大小" : "锁定窗口位置和大小";
+        if (trayLock != null) trayLock.Checked = preferences.Locked;
         double headerHeight = settingsOpen ? 42 : Math.Max(29, preferences.TitleFontSize + 10);
         double previewHeight = preferences.Preview ? (settingsOpen ? 42 : next.FontSize + 13) : 0;
         layout.RowDefinitions[0].Height = new GridLength(headerHeight);
         layout.RowDefinitions[2].Height = new GridLength(previewHeight);
         double lyricHeight = settingsOpen ? Math.Ceiling(52 * 1.18) * 2 : current.MaxHeight;
-        double newHeight = headerHeight + lyricHeight + previewHeight + 37 + preferences.BorderWidth * 2;
+        double newHeight = headerHeight + lyricHeight + previewHeight + 71 + preferences.BorderWidth * 2;
         if (!settingsOpen && preferences.WindowHeight > 0)
             newHeight = Math.Max(MinimumHudHeight(), Math.Min(SystemParameters.WorkArea.Height - 16, preferences.WindowHeight));
         double settingsHeight = 0;
@@ -1122,7 +1294,7 @@ sealed class Hud : Window
             settings.InvalidateMeasure();
             settingsFrame.InvalidateMeasure();
         }
-        layout.RowDefinitions[3].Height = new GridLength(settingsHeight);
+        layout.RowDefinitions[4].Height = new GridLength(settingsHeight);
         if (settingsHeight > 0) newHeight += settingsHeight + 7;
         double bottom = Top + Height;
         Height = newHeight;
@@ -1346,6 +1518,7 @@ sealed class Hud : Window
 
         if (title.Text != trackText) title.Text = trackText;
         if (source.Text != sourceText) source.Text = sourceText;
+        UpdateTransport();
         DrawCurrentLine(currentText, prefix, fillEnd, fraction);
         if (next.Text != nextText) next.Text = nextText;
     }
@@ -1448,12 +1621,35 @@ static class Program
         }
 
         bool first;
+        using (var showRequest = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\SpotifastLyricsHud.Show"))
+        using (var quitRequest = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\SpotifastLyricsHud.Quit"))
         using (var instance = new Mutex(true, "Local\\SpotifastLyricsHud", out first))
         {
-            if (!first) return 0;
+            if (args.Length == 1 && args[0] == "--quit")
+            {
+                quitRequest.Set();
+                return 0;
+            }
+            if (!first)
+            {
+                showRequest.Set();
+                return 0;
+            }
             var preferences = Preferences.Load();
             var app = new Application();
-            return app.Run(new Hud(preferences));
+            var hud = new Hud(preferences);
+            var listener = ThreadPool.RegisterWaitForSingleObject(showRequest,
+                (state, timedOut) => app.Dispatcher.BeginInvoke(new Action(hud.ShowFromTray)),
+                null, Timeout.Infinite, false);
+            var exitListener = ThreadPool.RegisterWaitForSingleObject(quitRequest,
+                (state, timedOut) => app.Dispatcher.BeginInvoke(new Action(hud.Close)),
+                null, Timeout.Infinite, false);
+            try { return app.Run(hud); }
+            finally
+            {
+                listener.Unregister(null);
+                exitListener.Unregister(null);
+            }
         }
     }
 }

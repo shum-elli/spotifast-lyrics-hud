@@ -2,6 +2,10 @@
 
 为 Spotifast 提供独立置顶歌词、渐进高亮、简体转换及字体、颜色和窗口设置。C# / WPF。
 
+浮窗底部支持上一曲、播放／暂停、下一曲。右上角锁按钮可锁定移动和缩放，锁定状态自动保存。
+
+程序常驻系统托盘。双击托盘图标显示浮窗，右键可显示／隐藏、锁定、控制播放、进入设置或退出。点浮窗的 × 隐藏到托盘，再次打开 exe 也可唤回窗口。
+
 ## 下载与运行
 
 从 [Releases](https://github.com/shum-elli/spotifast-lyrics-hud/releases/latest) 下载 Windows ZIP，完整解压到可写目录，打开 **Spotifast Lyrics HUD.exe**。

@@ -27,8 +27,10 @@ if (Test-Path -LiteralPath $data) {
     $resources += '/resource:' + (Join-Path $data 'LICENSE.txt') + ',OpenCC.LICENSE'
 }
 $source = Join-Path $projectRoot 'src\Hud.cs'
+$icon = Join-Path $projectRoot 'assets\hud.ico'
+$resources += '/resource:' + $icon + ',HUD.Icon'
 $program = Join-Path $output 'Spotifast Lyrics HUD.exe'
-& $compiler /nologo /optimize+ /target:winexe /platform:anycpu ('/out:' + $program) @references @resources $source
+& $compiler /nologo /optimize+ /target:winexe /platform:anycpu ('/win32icon:' + $icon) ('/out:' + $program) @references @resources $source
 if ($LASTEXITCODE -ne 0) {
     throw 'C# compilation failed.'
 }

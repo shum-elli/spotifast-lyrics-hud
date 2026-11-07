@@ -5,6 +5,10 @@ using System.Reflection;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using System.Windows;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Threading;
 static class HudChecks
 {
     static void Require(bool condition)
@@ -57,6 +61,25 @@ static class HudChecks
         Console.WriteLine("Small timing corrections never rewind playback. Seeks and pause remain responsive.");
         var hud = new Hud(new Preferences());
         const BindingFlags access = BindingFlags.Instance | BindingFlags.NonPublic;
+        var setLocked = typeof(Hud).GetMethod("SetLocked", access);
+        var grip = (Thumb)typeof(Hud).GetField("resizeGrip", access).GetValue(hud);
+        setLocked.Invoke(hud, new object[] { true });
+        Require(!hud.ShowInTaskbar && !grip.IsEnabled && grip.Visibility == Visibility.Collapsed);
+        var sizeBefore = new Size(hud.Width, hud.Height);
+        grip.RaiseEvent(new DragDeltaEventArgs(80, 80) { RoutedEvent = Thumb.DragDeltaEvent });
+        Require(hud.Width == sizeBefore.Width && hud.Height == sizeBefore.Height);
+        var prefs = (Preferences)typeof(Hud).GetField("preferences", access).GetValue(hud);
+        var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+        Require(serializer.Deserialize<Preferences>(serializer.Serialize(prefs)).Locked);
+        var dragTitle = (TextBlock)typeof(Hud).GetField("title", access).GetValue(hud);
+        Require(dragTitle.Cursor == Cursors.Arrow);
+        setLocked.Invoke(hud, new object[] { false });
+        Require(grip.IsEnabled && grip.Visibility == Visibility.Visible && dragTitle.Cursor == Cursors.SizeAll);
+        ((DispatcherTimer)typeof(Hud).GetField("save", access).GetValue(hud)).Stop();
+        using (var iconData = typeof(Hud).Assembly.GetManifestResourceStream("HUD.Icon"))
+        using (var icon = new System.Drawing.Icon(iconData))
+            Require(icon.Width == 32 && icon.Height == 32);
+        Console.WriteLine("Lock blocks resize events and survives settings serialization. Tray icon loads.");
         var track = new Track { Position = 1250, Duration = 5000, Title = "Synthetic", Artist = "Test", Album = "", Cover = "" };
         typeof(Hud).GetField("track", access).SetValue(hud, track);
         typeof(Hud).GetField("lyrics", access).SetValue(hud, new Lyrics
@@ -69,6 +92,8 @@ static class HudChecks
         var timeline = (PlaybackTimeline)typeof(Hud).GetField("timeline", access).GetValue(hud);
         timeline.Update(track, 0, true);
         render.Invoke(hud, null);
+        var play = (Button)typeof(Hud).GetField("playButton", access).GetValue(hud);
+        Require(Equals(play.Content, "▶") && play.IsEnabled);
         var runs = display.Inlines.OfType<Run>().ToArray();
         var active = runs[0];
         var gradient = (LinearGradientBrush)active.Foreground;
@@ -89,5 +114,10 @@ static class HudChecks
         Require(gradient.GradientStops[1].Offset > 1
             && ((LinearGradientBrush)runs[1].Foreground).GradientStops[1].Offset > 0);
         Console.WriteLine("Highlight crosses a character boundary without rebuilding the line.");
+        track.Playing = true;
+        timeline.Update(track, 0, false);
+        render.Invoke(hud, null);
+        Require(Equals(play.Content, "⏸"));
+        Console.WriteLine("Playback button reflects paused and playing states.");
     }
 }

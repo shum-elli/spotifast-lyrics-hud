@@ -27,6 +27,10 @@ Runtime requirements
 Extract this entire ZIP into a writable folder and run Spotifast Lyrics HUD.exe.
 The app creates settings.json beside the EXE. Keep it when upgrading.
 Use the gear button for settings. Drag the bottom-right handle to resize.
+Use the lock button to prevent moving and resizing. The lock state is saved.
+Previous, play/pause, and next are available on the overlay and tray menu.
+The app stays in the system tray. Double-click its icon to show the overlay.
+The X button hides the overlay. Use Exit in the tray menu to quit.
 OpenCC conversion dictionaries are embedded in the EXE.
 LRCLIB requests send the track title, artist, album, and duration.
 
@@ -45,6 +49,8 @@ $notes = 'Portable Windows build. Extract the ZIP and run Spotifast Lyrics HUD.e
     'Runtime download: https://dotnet.microsoft.com/download/dotnet-framework/net48' +
     [Environment]::NewLine +
     'settings.json is created beside the EXE. Preserve it when upgrading.' +
+    [Environment]::NewLine +
+    'Includes window locking, a system tray icon, and previous/play-pause/next controls.' +
     [Environment]::NewLine +
     'The package includes RUNNING.txt and the MIT and OpenCC licenses.'
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_NOTES.txt'), $notes)
