@@ -1,60 +1,37 @@
 # Spotifast Lyrics HUD
 
-A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WPF.
+为 Spotifast 提供独立置顶歌词、渐进高亮、简体转换及字体、颜色和窗口设置。C# / WPF。
 
-为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.9.0**。
+## 下载与运行
 
-## 功能
+从 [Releases](https://github.com/shum-elli/spotifast-lyrics-hud/releases/latest) 下载 Windows ZIP，完整解压到可写目录，打开 **Spotifast Lyrics HUD.exe**。
 
-- 基础置顶歌词浮窗与播放进度同步
-- 透明度、字号、同步偏移和增强 LRC 导入
-- 字体与颜色、边框设置、纯文本歌词翻句
-- 联网匹配其他元数据写法的同步歌词
-- 拖动缩放窗口、歌名字号、初版简体转换
-- 平滑播放时钟与稳定的逐字渐进高亮
-- 内置 OpenCC 词库，统一转换歌名与歌词
-- 纯文本播放期间自动发现 Spotifast 新缓存的时间轴
-- 明确启动时的设置读取顺序与错误提示
-- 程序同目录配置与旧配置自动迁移
+- Windows 10 / 11。
+- **Microsoft .NET Framework 4.8 或 4.8.1**。Windows 10 1903 及以后包含 4.8，Windows 11 包含 4.8 或 4.8.1。[微软运行库下载](https://dotnet.microsoft.com/download/dotnet-framework/net48)
+- 同一 Windows 账号下运行 Spotifast。已验证 0.17.1，安装位置为 %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe。
 
-## 构建与运行
+点齿轮调整设置，拖动右下角改变窗口大小。配置保存在 exe 旁的 settings.json，升级时保留该文件。ZIP 内的 RUNNING.txt 也包含运行说明。
 
-需要 Windows 和 .NET Framework 4.8。构建使用系统自带的 C# 编译器，无需 .NET SDK。
+## 歌词
 
-在项目目录运行
+读取 Spotifast 本地缓存，缺少同步版时尝试 LRCLIB。联网查询发送曲名、歌手、专辑和时长。缓存结构依赖 Spotifast 版本。
 
-    powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+逐字估算基于行时间轴，拖音与停顿可能有偏差。支持导入带字词时间戳的增强 LRC。纯文本可以用箭头或滚轮翻句。
 
-然后打开 bin 目录中的 Spotifast Lyrics HUD.exe。Spotifast 应已运行。
+## 构建
 
-初始验证环境为 Spotifast 0.17.1，默认安装路径为 %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe。工具通过 now-playing --raw 读取播放信息，并读取 %LOCALAPPDATA%\paolino\spotifast 中的歌词缓存。缓存结构依赖 Spotifast 版本。
-
-点右上角齿轮打开歌词与外观设置。收起设置后，拖动右下角手柄调整窗口大小。
-
-settings.json 保存在 exe 同目录，首次运行会迁移旧版 %LOCALAPPDATA%\SpotifastLyricsHud\settings.json。移动程序时，请带上配置文件。程序目录需要可写。
-
-## 歌词同步
-
-优先读取 Spotifast 已缓存的歌词，再按曲目元数据访问 [LRCLIB](https://lrclib.net)。网络查询会发送曲名、歌手、专辑和时长。
-
-本地只有纯文本时，会在后台寻找带时间轴的版本，并比较专辑、时长和歌词内容。显示纯文本时会定期复查本地缓存，发现同步版后自动跟随当前播放位置。
-
-带行时间戳的歌词支持逐行跟随。「逐字估算」根据行间时间估算字内进度，准确性取决于歌曲的停顿和拖音。带字词时间戳的增强 LRC 可以通过导入功能使用。纯文本歌词可以用箭头或滚轮翻句。
-
-## 版本记录
-
-[HISTORY.md](HISTORY.md) 列出 10 个开发节点。各版本通过 versions/vX.Y.Z 分支保留，可直接在 GitHub 切换分支查看。
-
-这些是从本次开发记录恢复并核对的历史源码快照，发布提交在整理时创建。中间未完成的编辑状态未作为版本发布。
-
-## 回归检查
+Windows 自带 C# 编译器即可构建。
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
-检查覆盖时间戳解析、暂停和跳转、平滑进度校正、中文转换以及高亮跨字时的排版稳定性。
+生成可运行 ZIP 和 SHA-256 校验文件
 
-## 许可与来源
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\package.ps1
 
-项目代码采用 [MIT License](LICENSE)。内置 OpenCC 1.2.0 词库采用 Apache-2.0，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
+[GitHub Actions](https://github.com/shum-elli/spotifast-lyrics-hud/actions) 在推送与 PR 时构建和测试。main 上的新 VERSION 会自动发布对应 Release，已存在的版本会保留。
 
-与本工具配合使用的 [Spotifast](https://github.com/crmne/spotifast) 和 [LRCLIB](https://github.com/tranxuanthang/lrclib) 各自独立维护。
+10 个历史源码快照位于 [versions/v0.1.0 至 versions/v0.9.0 分支](https://github.com/shum-elli/spotifast-lyrics-hud/branches/all)。它们从实际开发记录恢复，源码时间与哈希见 versions.json。
+
+## 许可
+
+代码采用 [MIT](LICENSE)。OpenCC 1.2.0 词库采用 [Apache-2.0](data/opencc/LICENSE.txt)，来自 [OpenCC 固定提交](https://github.com/BYVoid/OpenCC/tree/907bfcbbd3aae86ff04bc8eaca67c8af03108ddf)，词库随程序嵌入。项目配合 [Spotifast](https://github.com/crmne/spotifast) 使用。
