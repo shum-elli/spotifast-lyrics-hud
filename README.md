@@ -2,12 +2,13 @@
 
 A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WPF.
 
-为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.2.0**。
+为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.3.0**。
 
 ## 功能
 
 - 基础置顶歌词浮窗与播放进度同步
 - 透明度、字号、同步偏移和增强 LRC 导入
+- 字体与颜色、边框设置、纯文本歌词翻句
 
 ## 构建与运行
 
@@ -21,7 +22,7 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 
 初始验证环境为 Spotifast 0.17.1，默认安装路径为 %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe。工具通过 now-playing --raw 读取播放信息，并读取 %LOCALAPPDATA%\paolino\spotifast 中的歌词缓存。缓存结构依赖 Spotifast 版本。
 
-
+点右上角齿轮打开歌词与外观设置。
 
 本版本将设置保存在 %LOCALAPPDATA%\SpotifastLyricsHud\settings.json。
 
@@ -31,7 +32,7 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 
 
 
-带行时间戳的歌词支持逐行跟随。「逐字估算」根据行间时间估算字内进度，准确性取决于歌曲的停顿和拖音。带字词时间戳的增强 LRC 可以通过导入功能使用。
+带行时间戳的歌词支持逐行跟随。「逐字估算」根据行间时间估算字内进度，准确性取决于歌曲的停顿和拖音。带字词时间戳的增强 LRC 可以通过导入功能使用。纯文本歌词可以用箭头或滚轮翻句。
 
 ## 版本记录
 

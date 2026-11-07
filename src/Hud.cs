@@ -75,6 +75,7 @@ sealed class Lrc
     public double duration { get; set; }
     public bool instrumental { get; set; }
     public string syncedLyrics { get; set; }
+    public string plainLyrics { get; set; }
 }
 
 static class Spotifast
@@ -145,16 +146,20 @@ static class Lookup
             + Uri.EscapeDataString(track.Album) + "&duration="
             + (track.Duration / 1000.0).ToString("0", CultureInfo.InvariantCulture), token).ConfigureAwait(false);
         var first = ConvertRecord(exact);
-        if (first != null) return first;
+        if (first != null && (first.synced || first.instrumental)) return first;
 
-        var records = await Get<Lrc[]>("/search?" + query, token).ConfigureAwait(false);
-        return (records ?? new Lrc[0])
+        Lrc[] records;
+        try { records = await Get<Lrc[]>("/search?" + query, token).ConfigureAwait(false); }
+        catch (HttpRequestException) { if (first != null) return first; throw; }
+        catch (TaskCanceledException) { if (first != null && !token.IsCancellationRequested) return first; throw; }
+        var candidates = (records ?? new Lrc[0])
             .Where(r => Math.Abs(r.duration * 1000 - track.Duration) <= 5000
                 && Same(r.trackName, track.Title)
                 && (Same(r.artistName, track.Artist) || Same(r.artistName, track.LeadArtist)))
             .OrderBy(r => !Same(Whitespace.Replace(r.albumName ?? "", ""), Whitespace.Replace(track.Album, "")))
             .ThenBy(r => Math.Abs(r.duration * 1000 - track.Duration))
-            .Select(ConvertRecord).FirstOrDefault(r => r != null);
+            .Select(ConvertRecord).Where(r => r != null).ToList();
+        return candidates.FirstOrDefault(r => r.synced) ?? first ?? candidates.FirstOrDefault();
     }
 
     static async Task<T> Get<T>(string path, CancellationToken token) where T : class
@@ -185,12 +190,14 @@ static class Lookup
         string cache = Path.Combine(Spotifast.Root, @"cache\lyrics");
         var ids = matching.Where(t => t.id != null && TrackId.IsMatch(t.id)
             && t.uri == "spotify:track:" + t.id).Select(t => t.id).Distinct().ToList();
+        Lyrics plain = null;
         if (ids.Count == 1)
         {
             foreach (string prefix in new[] { "spotify-v2-", "spotify-" })
             {
                 var found = ReadCached(Path.Combine(cache, prefix + ids[0] + ".json"), "Spotifast 缓存 · Spotify");
-                if (found != null) return found;
+                if (found != null && (found.synced || found.instrumental)) return found;
+                plain = plain ?? found;
             }
         }
 
@@ -200,7 +207,8 @@ static class Lookup
         string hash;
         using (var sha = SHA1.Create())
             hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").ToLowerInvariant();
-        return ReadCached(Path.Combine(cache, hash + ".json"), "Spotifast 缓存 · LRCLIB");
+        var cached = ReadCached(Path.Combine(cache, hash + ".json"), "Spotifast 缓存 · LRCLIB");
+        return cached != null && (cached.synced || cached.instrumental) ? cached : plain ?? cached;
     }
 
     static Lyrics ReadCached(string path, string source)
@@ -208,9 +216,10 @@ static class Lookup
         var record = ReadJson<Cache>(path);
         var lyrics = record == null ? null : record.found;
         if (lyrics == null || lyrics.lines == null) return null;
-        if (!lyrics.instrumental && (!lyrics.synced || lyrics.lines.Count == 0 || lyrics.lines.Any(l => !l.at_ms.HasValue)))
-            return null;
-        lyrics.lines = lyrics.lines.OrderBy(l => l.at_ms).ToList();
+        if (!lyrics.instrumental && !lyrics.lines.Any(l => !string.IsNullOrWhiteSpace(l.text))) return null;
+        lyrics.synced = lyrics.synced && lyrics.lines.All(l => l.at_ms.HasValue);
+        if (lyrics.synced) lyrics.lines = lyrics.lines.OrderBy(l => l.at_ms).ToList();
+        else lyrics.lines = lyrics.lines.Where(l => !string.IsNullOrWhiteSpace(l.text)).ToList();
         lyrics.Source = source;
         return lyrics;
     }
@@ -231,7 +240,14 @@ static class Lookup
     static Lyrics ConvertRecord(Lrc record)
     {
         if (record == null) return null;
-        return ParseLrc(record.syncedLyrics, "LRCLIB", record.instrumental);
+        var synced = ParseLrc(record.syncedLyrics, "LRCLIB", record.instrumental);
+        if (synced != null || string.IsNullOrWhiteSpace(record.plainLyrics)) return synced;
+        return new Lyrics
+        {
+            Source = "LRCLIB",
+            lines = record.plainLyrics.Split('\n').Where(row => !string.IsNullOrWhiteSpace(row))
+                .Select(row => new Line { text = row.Trim() }).ToList()
+        };
     }
 
     public static Lyrics ParseLrc(string lrc, string source, bool instrumental = false)
@@ -304,6 +320,13 @@ sealed class Preferences
     public int OffsetMs { get; set; }
     public bool Karaoke { get; set; }
     public bool Preview { get; set; }
+    public string BackgroundColor { get; set; }
+    public string TextColor { get; set; }
+    public string HighlightColor { get; set; }
+    public string BorderColor { get; set; }
+    public string FontName { get; set; }
+    public int BorderWidth { get; set; }
+    public int CornerRadius { get; set; }
 
     public Preferences()
     {
@@ -311,6 +334,13 @@ sealed class Preferences
         FontSize = 27;
         Karaoke = true;
         Preview = true;
+        BackgroundColor = "#151B22";
+        TextColor = "#F6FAFC";
+        HighlightColor = "#9AE5BD";
+        BorderColor = "#34404A";
+        FontName = "Microsoft YaHei UI";
+        BorderWidth = 1;
+        CornerRadius = 16;
     }
 
     public static Preferences Load()
@@ -342,13 +372,20 @@ sealed class Hud : Window
     readonly TextBlock title, source, current, next;
     readonly Border card;
     readonly Border settingsFrame;
-    readonly StackPanel settings = new StackPanel { Visibility = Visibility.Collapsed };
+    readonly StackPanel settings = new StackPanel();
+    readonly StackPanel playbackSettings = new StackPanel();
+    readonly StackPanel appearanceSettings = new StackPanel { Visibility = Visibility.Collapsed };
+    readonly Button playbackTab, appearanceTab;
+    readonly StackPanel plainNavigation;
     readonly TextBlock settingsNotice;
     readonly Preferences preferences = Preferences.Load();
-    readonly Brush highlight = Color("#FF9AE5BD");
+    readonly SolidColorBrush highlight = new SolidColorBrush();
+    readonly GradientStop gradientOn = new GradientStop();
+    readonly GradientStop gradientOff = new GradientStop();
+    readonly LinearGradientBrush sweep;
     readonly DispatcherTimer save = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
     readonly DispatcherTimer poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
-    readonly DispatcherTimer render = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(75) };
+    readonly DispatcherTimer render = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
     readonly Stopwatch clock = new Stopwatch();
     Track track;
     Lyrics lyrics;
@@ -356,18 +393,22 @@ sealed class Hud : Window
     string importedKey;
     string displayedLine;
     int displayedPrefix = -1;
+    int displayedEnd = -1;
     string segmentedText;
     int[] textElements;
     string status = "";
     CancellationTokenSource lookup;
     bool reading, closed;
     int misses;
+    int plainIndex;
     DateTime retryAt = DateTime.MaxValue;
 
     static Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
 
     public Hud()
     {
+        sweep = new LinearGradientBrush(new GradientStopCollection { gradientOn, gradientOff },
+            new Point(0, 0.5), new Point(1, 0.5));
         Title = "Spotifast 歌词浮窗";
         Width = Math.Min(700, SystemParameters.WorkArea.Width - 32);
         Height = 160;
@@ -394,7 +435,7 @@ sealed class Hud : Window
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0) });
 
         var header = new DockPanel { LastChildFill = true };
         layout.Children.Add(header);
@@ -407,6 +448,19 @@ sealed class Hud : Window
         gear.Click += (sender, args) => ToggleSettings();
         DockPanel.SetDock(gear, Dock.Right);
         header.Children.Add(gear);
+
+        plainNavigation = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 5, 0)
+        };
+        var previousLine = ButtonFor("‹", "上一句歌词", 24, 18);
+        var followingLine = ButtonFor("›", "下一句歌词", 24, 18);
+        previousLine.Click += (sender, args) => MovePlain(-1);
+        followingLine.Click += (sender, args) => MovePlain(1);
+        plainNavigation.Children.Add(previousLine);
+        plainNavigation.Children.Add(followingLine);
+        DockPanel.SetDock(plainNavigation, Dock.Right);
+        header.Children.Add(plainNavigation);
 
         source = Text(11, "#FF9EACBA");
         source.Margin = new Thickness(10, 0, 11, 0);
@@ -432,6 +486,8 @@ sealed class Hud : Window
         {
             BlurRadius = 5, ShadowDepth = 1, Opacity = 0.9
         };
+        current.Background = Brushes.Transparent;
+        current.MouseWheel += (sender, args) => { if (MovePlain(args.Delta > 0 ? -1 : 1)) args.Handled = true; };
         Grid.SetRow(current, 1);
         layout.Children.Add(current);
 
@@ -448,15 +504,26 @@ sealed class Hud : Window
         };
         Grid.SetRow(settingsFrame, 3);
         layout.Children.Add(settingsFrame);
-        preferences.Background = AddSlider("背景不透明度", 0, 100, 1, preferences.Background, "%",
-            value => preferences.Background = value);
-        preferences.FontSize = AddSlider("歌词字号", 16, 52, 1, preferences.FontSize, "",
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 5) };
+        settings.Children.Add(tabs);
+        playbackTab = ButtonFor("歌词", "歌词与同步设置", 72, 12);
+        appearanceTab = ButtonFor("外观", "字体、颜色与边框设置", 72, 12);
+        appearanceTab.Margin = new Thickness(6, 0, 0, 0);
+        playbackTab.Click += (sender, args) => SelectTab(false);
+        appearanceTab.Click += (sender, args) => SelectTab(true);
+        playbackTab.Background = Color("#FF38634F");
+        tabs.Children.Add(playbackTab);
+        tabs.Children.Add(appearanceTab);
+        settings.Children.Add(playbackSettings);
+        settings.Children.Add(appearanceSettings);
+
+        preferences.FontSize = AddSlider(playbackSettings, "歌词字号", 16, 52, 1, preferences.FontSize, "",
             value => preferences.FontSize = value);
-        preferences.OffsetMs = AddSlider("歌词提前量", -2000, 2000, 50, preferences.OffsetMs, " ms",
+        preferences.OffsetMs = AddSlider(playbackSettings, "歌词提前量", -2000, 2000, 50, preferences.OffsetMs, " ms",
             value => preferences.OffsetMs = value);
 
         var options = new WrapPanel { Margin = new Thickness(0, 6, 0, 3) };
-        settings.Children.Add(options);
+        playbackSettings.Children.Add(options);
         options.Children.Add(AddOption("卡拉 OK 高亮", preferences.Karaoke, value => preferences.Karaoke = value));
         options.Children.Add(AddOption("显示下一句", preferences.Preview, value => preferences.Preview = value));
         var import = ButtonFor("导入当前曲目 LRC", "支持带字词时间戳的增强 LRC", 118, 12);
@@ -475,7 +542,8 @@ sealed class Hud : Window
         settingsNotice = Text(11, "#FFD0DCE5");
         settingsNotice.Margin = new Thickness(0, 2, 0, 3);
         settingsNotice.Text = "正值让歌词提前。带字词时间戳的 LRC 可精确高亮。";
-        settings.Children.Add(settingsNotice);
+        playbackSettings.Children.Add(settingsNotice);
+        BuildAppearance();
 
         save.Tick += (sender, args) => SavePreferences();
         ApplyPreferences();
@@ -508,11 +576,98 @@ sealed class Hud : Window
         };
     }
 
-    int AddSlider(string label, int min, int max, int step, int initial, string unit, Action<int> set)
+    void BuildAppearance()
+    {
+        var fontRow = new DockPanel { Height = 30 };
+        appearanceSettings.Children.Add(fontRow);
+        var fontLabel = Text(12, "#FFF0F5FA");
+        fontLabel.Text = "歌词字体";
+        fontLabel.Width = 108;
+        fontRow.Children.Add(fontLabel);
+        var names = Fonts.SystemFontFamilies.Select(f => f.Source).Distinct()
+            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (!names.Contains(preferences.FontName)) preferences.FontName = "Microsoft YaHei UI";
+        if (!names.Contains(preferences.FontName)) names.Insert(0, preferences.FontName);
+        var fonts = new ComboBox
+        {
+            ItemsSource = names, SelectedItem = preferences.FontName,
+            MaxDropDownHeight = 240, Height = 24, IsTextSearchEnabled = true,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        System.Windows.Automation.AutomationProperties.SetName(fonts, "歌词字体");
+        fonts.SelectionChanged += (sender, args) =>
+        {
+            if (fonts.SelectedItem == null) return;
+            preferences.FontName = (string)fonts.SelectedItem;
+            PreferencesChanged();
+        };
+        fontRow.Children.Add(fonts);
+
+        var colors = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2, Margin = new Thickness(0, 4, 0, 4) };
+        appearanceSettings.Children.Add(colors);
+        preferences.BackgroundColor = AddColor(colors, "背景色", preferences.BackgroundColor, "#151B22", value => preferences.BackgroundColor = value);
+        preferences.TextColor = AddColor(colors, "歌词色", preferences.TextColor, "#F6FAFC", value => preferences.TextColor = value);
+        preferences.HighlightColor = AddColor(colors, "高亮色", preferences.HighlightColor, "#9AE5BD", value => preferences.HighlightColor = value);
+        preferences.BorderColor = AddColor(colors, "边框色", preferences.BorderColor, "#34404A", value => preferences.BorderColor = value);
+
+        preferences.Background = AddSlider(appearanceSettings, "背景不透明度", 0, 100, 1, preferences.Background, "%",
+            value => preferences.Background = value);
+        preferences.BorderWidth = AddSlider(appearanceSettings, "边框粗细", 0, 8, 1, preferences.BorderWidth, " px",
+            value => preferences.BorderWidth = value);
+        preferences.CornerRadius = AddSlider(appearanceSettings, "边框圆角", 0, 36, 1, preferences.CornerRadius, " px",
+            value => preferences.CornerRadius = value);
+    }
+
+    string AddColor(Panel parent, string label, string initial, string fallback, Action<string> set)
+    {
+        var value = initial != null && Regex.IsMatch(initial, @"^#[0-9a-fA-F]{6}$") ? initial : fallback;
+        var button = ButtonFor(label, "点击选择" + label, double.NaN, 12);
+        button.Margin = new Thickness(0, 1, 5, 2);
+        var contents = new StackPanel { Orientation = Orientation.Horizontal };
+        var swatch = new Border
+        {
+            Background = Color(value), Width = 15, Height = 15,
+            BorderThickness = new Thickness(1), BorderBrush = Color("#FFA6B2BF"),
+            CornerRadius = new CornerRadius(3), Margin = new Thickness(0, 0, 8, 0)
+        };
+        var caption = new TextBlock { Text = label + "  " + value };
+        contents.Children.Add(swatch);
+        contents.Children.Add(caption);
+        button.Content = contents;
+        System.Windows.Automation.AutomationProperties.SetName(button, label);
+        button.Click += (sender, args) =>
+        {
+            using (var picker = new System.Windows.Forms.ColorDialog
+            {
+                FullOpen = true, AnyColor = true, SolidColorOnly = true,
+                Color = System.Drawing.ColorTranslator.FromHtml(value)
+            })
+            {
+                var owner = new DialogOwner(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+                if (picker.ShowDialog(owner) != System.Windows.Forms.DialogResult.OK) return;
+                var chosen = picker.Color;
+                value = string.Format("#{0:X2}{1:X2}{2:X2}", chosen.R, chosen.G, chosen.B);
+            }
+            swatch.Background = Color(value);
+            caption.Text = label + "  " + value;
+            set(value);
+            PreferencesChanged();
+        };
+        parent.Children.Add(button);
+        return value;
+    }
+
+    sealed class DialogOwner : System.Windows.Forms.IWin32Window
+    {
+        public IntPtr Handle { get; private set; }
+        public DialogOwner(IntPtr handle) { Handle = handle; }
+    }
+
+    int AddSlider(Panel parent, string label, int min, int max, int step, int initial, string unit, Action<int> set)
     {
         int value = Math.Max(min, Math.Min(max, initial));
         var row = new DockPanel { Height = 29 };
-        settings.Children.Add(row);
+        parent.Children.Add(row);
         var name = Text(12, "#FFF0F5FA");
         name.Width = 108;
         name.Text = label;
@@ -575,8 +730,22 @@ sealed class Hud : Window
 
     void ApplyPreferences()
     {
+        var background = ((SolidColorBrush)Color(preferences.BackgroundColor)).Color;
         card.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(
-            (byte)Math.Round(preferences.Background * 255 / 100.0), 21, 27, 34));
+            (byte)Math.Round(preferences.Background * 255 / 100.0), background.R, background.G, background.B));
+        card.BorderBrush = Color(preferences.BorderColor);
+        card.BorderThickness = new Thickness(preferences.BorderWidth);
+        card.CornerRadius = new CornerRadius(preferences.CornerRadius);
+        var textBrush = (SolidColorBrush)Color(preferences.TextColor);
+        var accent = ((SolidColorBrush)Color(preferences.HighlightColor)).Color;
+        current.Foreground = textBrush;
+        next.Foreground = new SolidColorBrush(textBrush.Color) { Opacity = 0.72 };
+        highlight.Color = accent;
+        gradientOn.Color = accent;
+        gradientOff.Color = textBrush.Color;
+        var font = new FontFamily(preferences.FontName + ", Microsoft YaHei UI, Segoe UI");
+        current.FontFamily = font;
+        next.FontFamily = font;
         current.FontSize = preferences.FontSize;
         current.LineHeight = Math.Ceiling(preferences.FontSize * 1.18);
         current.MaxHeight = current.LineHeight * 2;
@@ -584,8 +753,18 @@ sealed class Hud : Window
         next.Visibility = preferences.Preview ? Visibility.Visible : Visibility.Collapsed;
         var layout = (Grid)card.Child;
         layout.RowDefinitions[2].Height = new GridLength(preferences.Preview ? next.FontSize + 13 : 0);
-        double newHeight = 29 + current.MaxHeight + layout.RowDefinitions[2].Height.Value + 39;
-        if (settings.Visibility == Visibility.Visible) newHeight += 156;
+        double newHeight = 29 + current.MaxHeight + layout.RowDefinitions[2].Height.Value + 37 + preferences.BorderWidth * 2;
+        double settingsHeight = 0;
+        if (settingsFrame.Visibility == Visibility.Visible)
+        {
+            var page = appearanceSettings.Visibility == Visibility.Visible ? appearanceSettings : playbackSettings;
+            page.Measure(new Size(Math.Max(0, Width - 52 - preferences.BorderWidth * 2), double.PositiveInfinity));
+            settingsHeight = page.DesiredSize.Height + 42;
+            settings.InvalidateMeasure();
+            settingsFrame.InvalidateMeasure();
+        }
+        layout.RowDefinitions[3].Height = new GridLength(settingsHeight);
+        if (settingsHeight > 0) newHeight += settingsHeight + 7;
         double bottom = Top + Height;
         Height = newHeight;
         var area = SystemParameters.WorkArea;
@@ -595,8 +774,16 @@ sealed class Hud : Window
 
     void ToggleSettings()
     {
-        settings.Visibility = settings.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-        settingsFrame.Visibility = settings.Visibility;
+        settingsFrame.Visibility = settingsFrame.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        ApplyPreferences();
+    }
+
+    void SelectTab(bool appearance)
+    {
+        playbackSettings.Visibility = appearance ? Visibility.Collapsed : Visibility.Visible;
+        appearanceSettings.Visibility = appearance ? Visibility.Visible : Visibility.Collapsed;
+        playbackTab.Background = Color(appearance ? "#FF2B3540" : "#FF38634F");
+        appearanceTab.Background = Color(appearance ? "#FF38634F" : "#FF2B3540");
         ApplyPreferences();
     }
 
@@ -659,6 +846,7 @@ sealed class Hud : Window
         {
             if (lookup != null) lookup.Cancel();
             lyrics = null;
+            plainIndex = 0;
             status = "";
             retryAt = DateTime.MaxValue;
         }
@@ -679,8 +867,8 @@ sealed class Hud : Window
             var result = await Task.Run(() => Lookup.Find(latest, request.Token));
             if (closed || request.IsCancellationRequested) return;
             lyrics = result;
-            status = "没有找到同步歌词";
-            if (result == null) retryAt = DateTime.UtcNow.AddSeconds(45);
+            status = "没有找到歌词";
+            if (result == null) retryAt = DateTime.UtcNow.AddSeconds(20);
         }
         catch (Exception)
         {
@@ -709,12 +897,16 @@ sealed class Hud : Window
 
     void RenderLyrics()
     {
-        var selected = track != null && track.Key == importedKey ? imported : lyrics;
+        var selected = CurrentLyrics();
         string trackText = track == null ? "SPOTIFAST · 桌面歌词" : track.Title + "  ·  " + track.Artist;
         string sourceText = track == null ? "" : (!track.Playing ? "已暂停" : (selected == null ? "" : selected.Source));
         string currentText = track == null ? "等待 Spotifast 播放" : status;
         string nextText = "";
         int prefix = -1;
+        int fillEnd = -1;
+        double fraction = 0;
+        bool plain = selected != null && !selected.instrumental && !selected.synced && selected.lines.Count > 0;
+        plainNavigation.Visibility = plain ? Visibility.Visible : Visibility.Collapsed;
         if (track != null && selected != null)
         {
             if (selected.instrumental) currentText = "纯音乐";
@@ -744,8 +936,14 @@ sealed class Hud : Window
                             textElements = StringInfo.ParseCombiningCharacters(currentText);
                         }
                         long span = Math.Max(1, Math.Min(end - start, Math.Max(1400, textElements.Length * 420L)));
-                        int count = (int)Math.Min(textElements.Length, (position - start) * textElements.Length / span + 1);
+                        double progress = Math.Min(textElements.Length, (position - start) * (double)textElements.Length / span);
+                        int count = (int)progress;
                         prefix = count == textElements.Length ? currentText.Length : textElements[count];
+                        if (count < textElements.Length)
+                        {
+                            fillEnd = count + 1 == textElements.Length ? currentText.Length : textElements[count + 1];
+                            fraction = progress - count;
+                        }
                         if (track.Playing) sourceText = "逐字估算";
                     }
                 }
@@ -756,23 +954,55 @@ sealed class Hud : Window
                     break;
                 }
             }
+            else if (plain)
+            {
+                plainIndex = Math.Min(plainIndex, selected.lines.Count - 1);
+                currentText = selected.lines[plainIndex].text;
+                nextText = plainIndex + 1 < selected.lines.Count ? selected.lines[plainIndex + 1].text : "";
+                sourceText = "纯文本 " + (plainIndex + 1) + "/" + selected.lines.Count;
+            }
         }
 
         if (title.Text != trackText) title.Text = trackText;
         if (source.Text != sourceText) source.Text = sourceText;
-        if (displayedLine != currentText || displayedPrefix != prefix)
+        if (fillEnd >= 0)
+        {
+            gradientOn.Offset = fraction * 1.16 - 0.16;
+            gradientOff.Offset = fraction * 1.16;
+        }
+        if (displayedLine != currentText || displayedPrefix != prefix || displayedEnd != fillEnd)
         {
             displayedLine = currentText;
             displayedPrefix = prefix;
+            displayedEnd = fillEnd;
             if (prefix < 0) current.Text = currentText;
             else
             {
                 current.Inlines.Clear();
-                current.Inlines.Add(new Run(currentText.Substring(0, prefix)) { Foreground = highlight });
-                current.Inlines.Add(new Run(currentText.Substring(prefix)));
+                if (prefix > 0)
+                    current.Inlines.Add(new Run(currentText.Substring(0, prefix)) { Foreground = highlight });
+                if (fillEnd > prefix)
+                    current.Inlines.Add(new Run(currentText.Substring(prefix, fillEnd - prefix)) { Foreground = sweep });
+                int remaining = Math.Max(prefix, fillEnd);
+                if (remaining < currentText.Length) current.Inlines.Add(new Run(currentText.Substring(remaining)));
             }
         }
         if (next.Text != nextText) next.Text = nextText;
+    }
+
+    Lyrics CurrentLyrics()
+    {
+        if (track == null) return null;
+        return track.Key == importedKey ? imported : lyrics;
+    }
+
+    bool MovePlain(int step)
+    {
+        var selected = CurrentLyrics();
+        if (selected == null || selected.synced || selected.instrumental || selected.lines.Count == 0) return false;
+        plainIndex = Math.Max(0, Math.Min(selected.lines.Count - 1, plainIndex + step));
+        RenderLyrics();
+        return true;
     }
 
     public static int TimedPrefix(Line line, long position)
@@ -802,7 +1032,7 @@ static class Program
                     track.Title, track.Artist, track.Playing, track.Position,
                     lyrics == null ? "none" : lyrics.Source, lyrics != null && lyrics.synced,
                     lyrics == null ? 0 : lyrics.lines.Count, active));
-                return lyrics != null && lyrics.synced ? 0 : 2;
+                return lyrics != null ? 0 : 2;
             }
             catch (Exception error) { File.WriteAllText(args[1], error.ToString()); return 3; }
         }
