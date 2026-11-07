@@ -20,6 +20,7 @@ foreach ($name in @('System.Xaml', 'System.Web.Extensions', 'System.Net.Http', '
     $references += '/r:' + (Join-Path $framework ($name + '.dll'))
 }
 $resources = @()
+$resources += '/resource:' + (Join-Path $projectRoot 'LICENSE') + ',HUD.LICENSE'
 $data = Join-Path $projectRoot 'data\opencc'
 if (Test-Path -LiteralPath $data) {
     $resources += '/resource:' + (Join-Path $data 'TSCharacters.txt') + ',OpenCC.TSCharacters'
@@ -34,10 +35,6 @@ $program = Join-Path $output 'Spotifast Lyrics HUD.exe'
 & $compiler /nologo /optimize+ /target:winexe /platform:anycpu ('/win32icon:' + $icon) ('/out:' + $program) @references @resources $source
 if ($LASTEXITCODE -ne 0) {
     throw 'C# compilation failed.'
-}
-Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $output 'LICENSE.txt') -Force
-if (Test-Path -LiteralPath $data) {
-    Copy-Item -LiteralPath (Join-Path $data 'LICENSE.txt') -Destination (Join-Path $output 'OpenCC-LICENSE.txt') -Force
 }
 Write-Output ('Built ' + $program)
 if ($Test) {

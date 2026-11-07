@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'build.ps1') -Test
@@ -9,55 +9,34 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {
 $output = Join-Path $PSScriptRoot 'bin'
 $stage = Join-Path $output ('package-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $stage
-foreach ($name in @('Spotifast Lyrics HUD.exe', 'LICENSE.txt', 'OpenCC-LICENSE.txt')) {
-    Copy-Item -LiteralPath (Join-Path $output $name) -Destination (Join-Path $stage $name)
-}
-$runtime = @'
-Spotifast Lyrics HUD
-
-Runtime requirements
-- Windows 10 or Windows 11.
-- Microsoft .NET Framework 4.8 or 4.8.1.
-  Windows 10 1903+ includes 4.8. Windows 11 includes 4.8 or 4.8.1.
-  Runtime download: https://dotnet.microsoft.com/download/dotnet-framework/net48
-- Spotifast running on the same Windows account.
-  Tested with Spotifast 0.17.1 installed at:
-  %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe
-
-Extract this entire ZIP into a writable folder and run Spotifast Lyrics HUD.exe.
-The app creates settings.json beside the EXE. Keep it when upgrading.
-Use the gear button for settings. Drag the bottom-right handle to resize.
-Drag the title, status text, or empty space across the top bar to move the overlay.
-Use the lock button to prevent moving and resizing. The lock state is saved.
-Controls have transparent backgrounds. Only the unlock button is visible while locked.
-While locked, mouse input passes through the lyrics; only the lock icon is clickable.
-The unlock button does not activate the overlay. Ctrl+Alt+L and the tray menu also unlock it.
-Previous, play/pause, and next are available on the overlay and tray menu.
-The app stays in the system tray. Double-click its icon to show the overlay.
-The X button hides the overlay. Use Exit in the tray menu to quit.
-OpenCC conversion dictionaries are embedded in the EXE.
-LRCLIB requests send the track title, artist, album, and duration.
-
-Source and help: https://github.com/shum-elli/spotifast-lyrics-hud
-'@
-[IO.File]::WriteAllText((Join-Path $stage 'RUNNING.txt'), $runtime)
+$exeName = 'Spotifast-Lyrics-HUD-v' + $version + '-windows.exe'
+$standalone = Join-Path $output $exeName
+Copy-Item -LiteralPath (Join-Path $output 'Spotifast Lyrics HUD.exe') -Destination $standalone -Force
+Copy-Item -LiteralPath $standalone -Destination (Join-Path $stage 'Spotifast Lyrics HUD.exe')
 $zipName = 'Spotifast-Lyrics-HUD-v' + $version + '-windows.zip'
 $zip = Join-Path $output $zipName
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
-$hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-[IO.File]::WriteAllText((Join-Path $output 'SHA256SUMS.txt'), $hash + '  ' + $zipName + [Environment]::NewLine)
-$notes = 'Portable Windows build. Extract the ZIP and run Spotifast Lyrics HUD.exe.' +
-    [Environment]::NewLine + [Environment]::NewLine +
-    'Requires Windows 10/11, Microsoft .NET Framework 4.8 or 4.8.1, and Spotifast.' +
-    [Environment]::NewLine +
-    'Runtime download: https://dotnet.microsoft.com/download/dotnet-framework/net48' +
-    [Environment]::NewLine +
-    'settings.json is created beside the EXE. Preserve it when upgrading.' +
-    [Environment]::NewLine +
-    'Sharper title text, a unified accent-colour settings panel, and dragging across the top bar.' +
-    [Environment]::NewLine +
-    'While locked, lyrics pass mouse input through. The lock icon stays clickable without activating the overlay.' +
-    [Environment]::NewLine +
-    'The package includes RUNNING.txt and the MIT and OpenCC licenses.'
+$checksums = foreach ($file in @($standalone, $zip)) {
+    (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetFileName($file)
+}
+[IO.File]::WriteAllLines((Join-Path $output 'SHA256SUMS.txt'), [string[]]$checksums)
+$notes = @"
+## 下载 / Download
+
+直接下载 EXE，放到可写目录运行，无需安装或解压。ZIP 为可选下载。
+Download the EXE and run it from a writable folder. No installation or extraction needed. The ZIP is optional.
+
+需要 Windows 10/11、Microsoft .NET Framework 4.8 或 4.8.1，以及同一账号下运行的 Spotifast。
+Requires Windows 10/11, Microsoft .NET Framework 4.8 or 4.8.1, and Spotifast running under the same Windows account.
+
+[运行库 / Runtime](https://dotnet.microsoft.com/download/dotnet-framework/net48)
+
+settings.json 保存在 EXE 旁，升级时请保留。许可文本已内置，可在托盘菜单“开源许可”中查看和复制。
+Keep settings.json beside the EXE when upgrading. Embedded license texts can be read and copied via the tray menu: 开源许可 (Open-source licenses).
+
+新增中英文 README，欢迎大家提交 Issue 反馈问题和建议。
+Chinese and English READMEs are available. Bug reports, feature requests, and suggestions are welcome in Issues.
+"@
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_NOTES.txt'), $notes)
+Write-Output ('Packaged ' + $standalone)
 Write-Output ('Packaged ' + $zip)

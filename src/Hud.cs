@@ -1067,12 +1067,14 @@ sealed class Hud : Window
             ShowFromTray();
             if (settingsFrame.Visibility != Visibility.Visible) ToggleSettings();
         };
+        var licenses = new System.Windows.Forms.ToolStripMenuItem("开源许可");
+        licenses.Click += (sender, args) => ShowLicenses();
         var exit = new System.Windows.Forms.ToolStripMenuItem("退出");
         exit.Click += (sender, args) => Close();
         trayMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[]
         {
             trayShow, trayLock, traySettings, new System.Windows.Forms.ToolStripSeparator(),
-            trayPrevious, trayPlay, trayNext, new System.Windows.Forms.ToolStripSeparator(), exit
+            trayPrevious, trayPlay, trayNext, new System.Windows.Forms.ToolStripSeparator(), licenses, exit
         });
         tray = new System.Windows.Forms.NotifyIcon
         {
@@ -1080,6 +1082,37 @@ sealed class Hud : Window
         };
         tray.DoubleClick += (sender, args) => ShowFromTray();
         UpdateTransport();
+    }
+
+    internal static string LicenseText(string resource)
+    {
+        using (var stream = typeof(Hud).Assembly.GetManifestResourceStream(resource))
+        {
+            if (stream == null) throw new InvalidOperationException("Missing license: " + resource);
+            using (var reader = new System.IO.StreamReader(stream)) return reader.ReadToEnd();
+        }
+    }
+
+    internal static Window CreateLicenseWindow()
+    {
+        var tabs = new TabControl { Margin = new Thickness(12) };
+        foreach (var entry in new[] {
+            new[] { "Spotifast Lyrics HUD · MIT", "HUD.LICENSE" },
+            new[] { "OpenCC 1.2.0 · Apache-2.0", "OpenCC.LICENSE" } })
+        {
+            tabs.Items.Add(new TabItem { Header = entry[0], Content = new TextBox {
+                Text = LicenseText(entry[1]), IsReadOnly = true, TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(12),
+                FontFamily = new FontFamily("Segoe UI"), FontSize = 14 } });
+        }
+        return new Window { Title = "开源许可 / Open-source licenses", Width = 760, Height = 560,
+            MinWidth = 420, MinHeight = 280, WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Content = tabs };
+    }
+
+    void ShowLicenses()
+    {
+        CreateLicenseWindow().ShowDialog();
     }
 
     public void ShowFromTray()

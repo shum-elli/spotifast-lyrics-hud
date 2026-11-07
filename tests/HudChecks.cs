@@ -34,6 +34,14 @@ static class HudChecks
 
     static void RunChecks()
     {
+        Require(Hud.LicenseText("HUD.LICENSE").Contains("Copyright (c) 2026 shum-elli"));
+        Require(Hud.LicenseText("OpenCC.LICENSE").Contains("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION"));
+        var licenseWindow = Hud.CreateLicenseWindow();
+        var licenseTabs = (TabControl)licenseWindow.Content;
+        Require(licenseTabs.Items.Count == 2);
+        foreach (TabItem tab in licenseTabs.Items)
+            Require(((TextBox)tab.Content).IsReadOnly && ((TextBox)tab.Content).Text.Length > 1000);
+        licenseWindow.Close();
         var lrc = "[offset:100]\n[00:01.00]<00:01.00>你<00:01.50>好<00:02.20>\n[00:03.00]下一句";
         var timed = Lookup.ParseLrc(lrc, "test");
         var line = timed.lines[0];

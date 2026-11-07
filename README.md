@@ -1,5 +1,7 @@
 # Spotifast Lyrics HUD
 
+**简体中文** | [English](README.en.md)
+
 ![Spotifast Lyrics HUD 界面预览](assets/promo.png)
 
 真实控件渲染，使用演示曲目信息。
@@ -14,13 +16,13 @@
 
 ## 下载与运行
 
-从 [Releases](https://github.com/shum-elli/spotifast-lyrics-hud/releases/latest) 下载 Windows ZIP，完整解压到可写目录，打开 **Spotifast Lyrics HUD.exe**。
+从 [Releases](https://github.com/shum-elli/spotifast-lyrics-hud/releases/latest) 下载 **`Spotifast-Lyrics-HUD-v版本号-windows.exe`**，放到可写目录后直接运行，无需安装或解压。ZIP 仅作为可选下载。
 
 - Windows 10 / 11。
 - **Microsoft .NET Framework 4.8 或 4.8.1**。Windows 10 1903 及以后包含 4.8，Windows 11 包含 4.8 或 4.8.1。[微软运行库下载](https://dotnet.microsoft.com/download/dotnet-framework/net48)
 - 同一 Windows 账号下运行 Spotifast。已验证 0.17.1，安装位置为 %LOCALAPPDATA%\Programs\Spotifast\spotifast.exe。
 
-解锁后点齿轮调整设置，拖动右下角改变窗口大小。配置保存在 exe 旁的 settings.json，升级时保留该文件。ZIP 内的 RUNNING.txt 也包含运行说明。
+解锁后点齿轮调整设置，拖动右下角改变窗口大小。配置保存在 exe 旁的 settings.json，升级时保留该文件。许可文本已内置，右键托盘图标 → **开源许可** 即可查看和复制，无需在程序目录放置额外说明或许可文件。
 
 顶部的标题、状态文字及空白区域都支持拖动，操作按钮保留各自的点击功能。设置面板的滑杆、下拉框和复选框统一跟随当前强调色。
 
@@ -36,13 +38,17 @@ Windows 自带 C# 编译器即可构建。
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
-生成可运行 ZIP 和 SHA-256 校验文件
+生成可直接运行的 EXE、可选 ZIP 和 SHA-256 校验文件
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\package.ps1
 
 [GitHub Actions](https://github.com/shum-elli/spotifast-lyrics-hud/actions) 在推送与 PR 时构建和测试。main 上的新 VERSION 会自动发布对应 Release，已存在的版本会保留。
 
 10 个历史源码快照位于 [versions/v0.1.0 至 versions/v0.9.0 分支](https://github.com/shum-elli/spotifast-lyrics-hud/branches/all)。它们从实际开发记录恢复，源码时间与哈希见 versions.json。
+
+## 反馈
+
+欢迎大家[提交 Issue](https://github.com/shum-elli/spotifast-lyrics-hud/issues)，反馈 Bug、提出功能需求或分享使用建议。遇到问题时，请尽量附上 HUD 与 Spotifast 的版本、复现步骤及截图；歌词问题也请注明歌曲和歌手。
 
 ## 许可
 

@@ -36,6 +36,7 @@ jobs:
         with:
           name: windows-portable-${{ steps.package.outputs.version }}
           path: |
+            bin/Spotifast-Lyrics-HUD-*-windows.exe
             bin/Spotifast-Lyrics-HUD-*-windows.zip
             bin/SHA256SUMS.txt
             bin/RELEASE_NOTES.txt
@@ -68,6 +69,7 @@ jobs:
               --target "$GITHUB_SHA" \
               --title "Spotifast Lyrics HUD $tag" \
               --notes-file dist/RELEASE_NOTES.txt \
+              "dist/Spotifast-Lyrics-HUD-$tag-windows.exe" \
               "dist/Spotifast-Lyrics-HUD-$tag-windows.zip" \
               dist/SHA256SUMS.txt
           fi
