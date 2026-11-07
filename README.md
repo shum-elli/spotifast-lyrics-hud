@@ -2,7 +2,7 @@
 
 A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WPF.
 
-为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.8.1**。
+为 Spotifast 提供独立、置顶的桌面歌词浮窗。当前快照为 **v0.9.0**。
 
 ## 功能
 
@@ -15,6 +15,7 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 - 内置 OpenCC 词库，统一转换歌名与歌词
 - 纯文本播放期间自动发现 Spotifast 新缓存的时间轴
 - 明确启动时的设置读取顺序与错误提示
+- 程序同目录配置与旧配置自动迁移
 
 ## 构建与运行
 
@@ -30,7 +31,7 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 
 点右上角齿轮打开歌词与外观设置。收起设置后，拖动右下角手柄调整窗口大小。
 
-本版本将设置保存在 %LOCALAPPDATA%\SpotifastLyricsHud\settings.json。
+settings.json 保存在 exe 同目录，首次运行会迁移旧版 %LOCALAPPDATA%\SpotifastLyricsHud\settings.json。移动程序时，请带上配置文件。程序目录需要可写。
 
 ## 歌词同步
 
@@ -45,6 +46,12 @@ A lightweight Windows desktop lyrics overlay for Spotifast, written in C# and WP
 [HISTORY.md](HISTORY.md) 列出 10 个开发节点。各版本通过 versions/vX.Y.Z 分支保留，可直接在 GitHub 切换分支查看。
 
 这些是从本次开发记录恢复并核对的历史源码快照，发布提交在整理时创建。中间未完成的编辑状态未作为版本发布。
+
+## 回归检查
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
+
+检查覆盖时间戳解析、暂停和跳转、平滑进度校正、中文转换以及高亮跨字时的排版稳定性。
 
 ## 许可与来源
 
