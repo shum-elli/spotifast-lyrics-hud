@@ -34,6 +34,7 @@ static class HudChecks
 
     static void RunChecks()
     {
+        CheckPlaylistBeforeHistory();
         Require(Hud.LicenseText("HUD.LICENSE").Contains("Copyright (c) 2026 shum-elli"));
         Require(Hud.LicenseText("OpenCC.LICENSE").Contains("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION"));
         var licenseWindow = Hud.CreateLicenseWindow();
@@ -251,5 +252,53 @@ static class HudChecks
         Require(surfaceField.GetValue(hud) == null);
         Console.WriteLine("Native click-through and no-activation flags toggle correctly. Hotkey messages unlock without activation.");
         Console.WriteLine("The separate unlock button is clickable, aligned, non-activating, and follows owner visibility.");
+    }
+
+    static void CheckPlaylistBeforeHistory()
+    {
+        string root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "HudChecks-" + Guid.NewGuid().ToString("N"));
+        string data = System.IO.Path.Combine(root, "data");
+        string account = System.IO.Path.Combine(root, @"cache\playlists\test-account");
+        string cache = System.IO.Path.Combine(root, @"cache\lyrics");
+        try
+        {
+            System.IO.Directory.CreateDirectory(data);
+            System.IO.Directory.CreateDirectory(account);
+            System.IO.Directory.CreateDirectory(cache);
+            const string id = "7rx2ZwinWnNWJNPxZU2oOP";
+            const string playlist = "37i9dQZF1DX5vMTfJy5XKE";
+            var json = new System.Web.Script.Serialization.JavaScriptSerializer();
+            System.IO.File.WriteAllText(System.IO.Path.Combine(data, "history.json"), "[]");
+            System.IO.File.WriteAllText(System.IO.Path.Combine(data, "session.json"),
+                json.Serialize(new SavedSession { last_context = "spotify:playlist:" + playlist }));
+            string manifest = System.IO.Path.Combine(account, playlist + ".manifest.json");
+            System.IO.File.WriteAllText(manifest, json.Serialize(new PlaylistManifest { version = 2, data_file = 1 }));
+            var metadata = new HistoryTrack { id = id, uri = "spotify:track:" + id,
+                name = "Fixture song", duration_ms = 200000, artists = new[] { new Artist { name = "Fixture artist" } },
+                album = new Album { name = "Fixture album", images = new[] { new Cover { url = "cover-a" } } } };
+            string rows = System.IO.Path.Combine(account, playlist + ".rows.0000000000000001");
+            System.IO.File.WriteAllText(rows, json.Serialize(new[] { new PlaylistRow { item = metadata } }));
+            System.IO.File.WriteAllText(System.IO.Path.Combine(cache, "spotify-v2-" + id + ".json"),
+                json.Serialize(new Cache { found = new Lyrics { synced = true,
+                    lines = new List<Line> { new Line { at_ms = 1000, text = "first-play lyrics" } } } }));
+            var track = new Track { Title = metadata.name, Artist = "Fixture artist", Album = "Fixture album",
+                Duration = 200000, Cover = "cover-a" };
+            var result = Lookup.ReadLocal(track, root);
+            Require(result != null && result.synced && result.lines[0].text == "first-play lyrics");
+            track.Cover = "different recording";
+            Require(Lookup.ReadLocal(track, root) == null);
+            track.Cover = "cover-a";
+            metadata.uri = "spotify:track:another-version";
+            System.IO.File.WriteAllText(rows, json.Serialize(new[] { new PlaylistRow { item = metadata } }));
+            Require(Lookup.ReadLocal(track, root) == null);
+            System.IO.File.WriteAllText(manifest, "{incomplete");
+            Require(Lookup.ReadLocal(track, root) == null);
+            Console.WriteLine("Cached playlist lyrics load before play history exists; mismatched recordings and incomplete cache are rejected.");
+        }
+        finally
+        {
+            // This absolute, uniquely named directory was created by this check.
+            if (System.IO.Directory.Exists(root)) System.IO.Directory.Delete(root, true);
+        }
     }
 }

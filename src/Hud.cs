@@ -194,6 +194,9 @@ sealed class Lyrics
 
 sealed class Cache { public Lyrics found { get; set; } }
 sealed class Play { public HistoryTrack track { get; set; } }
+sealed class SavedSession { public string last_context { get; set; } }
+sealed class PlaylistManifest { public int version { get; set; } public ulong data_file { get; set; } }
+sealed class PlaylistRow { public HistoryTrack item { get; set; } }
 sealed class HistoryTrack
 {
     public string id { get; set; }
@@ -424,15 +427,17 @@ static class Lookup
 
     public static Lyrics ReadLocal(Track track)
     {
-        var history = ReadJson<Play[]>(Path.Combine(Spotifast.Root, @"data\history.json"));
-        var matching = (history ?? new Play[0]).Select(p => p.track)
-            .Where(t => t != null && t.album != null && t.artists != null
-                && t.name == track.Title && t.album.name == track.Album && t.duration_ms == track.Duration
-                && string.Join(", ", t.artists.Select(a => a.name)) == track.Artist
-                && (string.IsNullOrEmpty(track.Cover)
-                    || (t.album.images ?? new Cover[0]).Any(i => i.url == track.Cover)))
-            .ToList();
-        string cache = Path.Combine(Spotifast.Root, @"cache\lyrics");
+        return ReadLocal(track, Spotifast.Root);
+    }
+
+    internal static Lyrics ReadLocal(Track track, string root)
+    {
+        var history = ReadJson<Play[]>(Path.Combine(root, @"data\history.json"));
+        var matching = MatchTracks(track, (history ?? new Play[0]).Select(p => p.track));
+        // New songs enter Spotifast's history only after about 30 seconds.
+        // The current playlist already has full metadata; match it just as strictly.
+        if (matching.Count == 0) matching = MatchTracks(track, ReadPlaylistTracks(root));
+        string cache = Path.Combine(root, @"cache\lyrics");
         var ids = matching.Where(t => t.id != null && TrackId.IsMatch(t.id)
             && t.uri == "spotify:track:" + t.id).Select(t => t.id).Distinct().ToList();
         Lyrics plain = null;
@@ -454,6 +459,44 @@ static class Lookup
             hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").ToLowerInvariant();
         var cached = ReadCached(Path.Combine(cache, hash + ".json"), "Spotifast 缓存 · LRCLIB");
         return cached != null && (cached.synced || cached.instrumental) ? cached : plain ?? cached;
+    }
+
+    static List<HistoryTrack> MatchTracks(Track track, IEnumerable<HistoryTrack> tracks)
+    {
+        return tracks
+            .Where(t => t != null && t.album != null && t.artists != null
+                && t.name == track.Title && t.album.name == track.Album && t.duration_ms == track.Duration
+                && string.Join(", ", t.artists.Select(a => a.name)) == track.Artist
+                && (string.IsNullOrEmpty(track.Cover)
+                    || (t.album.images ?? new Cover[0]).Any(i => i.url == track.Cover)))
+            .ToList();
+    }
+
+    static IEnumerable<HistoryTrack> ReadPlaylistTracks(string root)
+    {
+        var session = ReadJson<SavedSession>(Path.Combine(root, @"data\session.json"));
+        const string prefix = "spotify:playlist:";
+        if (session == null || session.last_context == null || !session.last_context.StartsWith(prefix, StringComparison.Ordinal))
+            return new HistoryTrack[0];
+        string id = session.last_context.Substring(prefix.Length);
+        if (!TrackId.IsMatch(id)) return new HistoryTrack[0];
+        var tracks = new List<HistoryTrack>();
+        try
+        {
+            string playlists = Path.Combine(root, @"cache\playlists");
+            if (!Directory.Exists(playlists)) return tracks;
+            foreach (string account in Directory.GetDirectories(playlists))
+            {
+                var manifest = ReadJson<PlaylistManifest>(Path.Combine(account, id + ".manifest.json"));
+                if (manifest == null || manifest.version != 2) continue;
+                string file = id + ".rows." + manifest.data_file.ToString("x16", CultureInfo.InvariantCulture);
+                var rows = ReadJson<PlaylistRow[]>(Path.Combine(account, file));
+                if (rows != null) tracks.AddRange(rows.Where(r => r != null).Select(r => r.item));
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return tracks;
     }
 
     static Lyrics ReadCached(string path, string source)
