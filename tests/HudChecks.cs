@@ -122,6 +122,29 @@ static class HudChecks
         Console.WriteLine("Lock blocks resize events and survives settings serialization. Tray icon loads.");
         var track = new Track { Position = 1250, Duration = 5000, Title = "Synthetic", Artist = "Test", Album = "", Cover = "" };
         typeof(Hud).GetField("track", access).SetValue(hud, track);
+        var lyricField = typeof(Hud).GetField("lyrics", access);
+        var delayed = new Lyrics { synced = true, Source = "delayed local cache",
+            lines = new List<Line> { new Line { at_ms = 0, text = "迟到的本地歌词" } } };
+        lyricField.SetValue(hud, null);
+        Require(Hud.NeedsLocalRefresh(null));
+        // Discovery must work while the original network request is still pending.
+        using (var pending = new System.Threading.CancellationTokenSource())
+        {
+            typeof(Hud).GetField("lookup", access).SetValue(hud, pending);
+            Require(hud.ApplyCachedLyrics(track, null, delayed));
+            Require(ReferenceEquals(lyricField.GetValue(hud), delayed) && !Hud.NeedsLocalRefresh(delayed));
+            var cachedDisplay = (TextBlock)typeof(Hud).GetField("current", access).GetValue(hud);
+            Require(new TextRange(cachedDisplay.ContentStart, cachedDisplay.ContentEnd).Text == "迟到的本地歌词");
+            typeof(Hud).GetField("lookup", access).SetValue(hud, null);
+        }
+        lyricField.SetValue(hud, null);
+        var latePlain = new Lyrics { lines = new List<Line> { new Line { text = "后来出现的纯文本" } } };
+        Require(hud.ApplyCachedLyrics(track, null, latePlain) && Hud.NeedsLocalRefresh(latePlain));
+        Require(!hud.ApplyCachedLyrics(new Track { Title = "previous song" }, latePlain, delayed));
+        Require(!hud.ApplyCachedLyrics(track, null, delayed));
+        Require(hud.ApplyCachedLyrics(track, latePlain, delayed));
+        Require(!Hud.NeedsLocalRefresh(new Lyrics { instrumental = true }));
+        Console.WriteLine("Delayed local lyrics load after a miss or during a pending request; stale results are rejected.");
         typeof(Hud).GetField("lyrics", access).SetValue(hud, new Lyrics
         {
             synced = true, Source = "test",

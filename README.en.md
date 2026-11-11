@@ -32,7 +32,7 @@ The app stays in the system tray. Double-click the icon to show the overlay; rig
 
 ## Lyrics
 
-Reads Spotifast's local lyric cache and tries LRCLIB when synced lyrics are missing. Online lookups send the track title, artist, album, and duration. Cache compatibility depends on the Spotifast version.
+Reads Spotifast's local lyric cache and tries LRCLIB when synced lyrics are missing. Online lookups send the track title, artist, album, and duration. Cache compatibility depends on the Spotifast version. After a miss or while an online lookup is pending, the local cache is checked every three seconds so newly available synced lyrics load automatically.
 
 Estimated word highlighting uses line timestamps and may differ during sustained notes or pauses. Import Enhanced LRC for actual word timestamps. For plain lyrics, use the arrows or mouse wheel to change lines.
 

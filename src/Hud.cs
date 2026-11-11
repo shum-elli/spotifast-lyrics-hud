@@ -1713,7 +1713,7 @@ sealed class Hud : Window
         }
         if (latest != null && (changed || DateTime.UtcNow >= retryAt))
             await RefreshLyrics(latest);
-        else if (latest != null && lookup == null && DateTime.UtcNow >= cacheCheckAt)
+        else if (latest != null && NeedsLocalRefresh(lyrics) && DateTime.UtcNow >= cacheCheckAt)
             await RefreshCachedTiming(latest);
         RenderLyrics();
     }
@@ -1724,10 +1724,27 @@ sealed class Hud : Window
         var plain = lyrics;
         cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
         var cached = await Task.Run(() => Lookup.ReadLocal(latest));
-        if (closed || track == null || track.Key != latest.Key || lyrics != plain) return;
-        if (cached == null || !cached.synced) return;
+        ApplyCachedLyrics(latest, plain, cached);
+    }
+
+    internal static bool NeedsLocalRefresh(Lyrics value)
+    {
+        return value == null || (!value.synced && !value.instrumental);
+    }
+
+    internal bool ApplyCachedLyrics(Track latest, Lyrics previous, Lyrics cached)
+    {
+        if (closed || track == null || track.Key != latest.Key || lyrics != previous || cached == null) return false;
+        if (previous != null && !cached.synced && !cached.instrumental) return false;
         lyrics = cached;
-        cacheCheckAt = DateTime.MaxValue;
+        status = "";
+        if (!NeedsLocalRefresh(cached))
+        {
+            cacheCheckAt = DateTime.MaxValue;
+            retryAt = DateTime.MaxValue;
+        }
+        RenderLyrics();
+        return true;
     }
 
     async Task RefreshLyrics(Track latest)
@@ -1736,28 +1753,32 @@ sealed class Hud : Window
         lookup = request;
         status = "正在查找歌词…";
         retryAt = DateTime.MaxValue;
+        cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
         RenderLyrics();
         try
         {
             var preview = new Progress<Lyrics>(available =>
             {
-                if (closed || lookup != request) return;
+                if (closed || lookup != request || track == null || track.Key != latest.Key || !NeedsLocalRefresh(lyrics)) return;
                 lyrics = available;
                 RenderLyrics();
             });
             var result = await Task.Run(() => Lookup.Find(latest, request.Token, preview));
-            if (closed || request.IsCancellationRequested) return;
-            lyrics = result;
+            if (closed || request.IsCancellationRequested || lookup != request || track == null || track.Key != latest.Key) return;
+            // A late network response must not replace locally discovered synced lyrics.
+            if (!NeedsLocalRefresh(lyrics)) return;
+            lyrics = result ?? lyrics;
             status = "没有找到歌词";
-            if (result == null) retryAt = DateTime.UtcNow.AddSeconds(20);
-            else if (!result.synced && !result.instrumental) cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
+            if (lyrics == null) retryAt = DateTime.UtcNow.AddSeconds(20);
+            cacheCheckAt = NeedsLocalRefresh(lyrics) ? DateTime.UtcNow.AddSeconds(3) : DateTime.MaxValue;
         }
         catch (Exception)
         {
-            if (closed || request.IsCancellationRequested) return;
+            if (closed || request.IsCancellationRequested || lookup != request || track == null || track.Key != latest.Key
+                || !NeedsLocalRefresh(lyrics)) return;
             status = "暂时无法获取歌词";
             retryAt = DateTime.UtcNow.AddSeconds(20);
-            if (lyrics != null && !lyrics.synced && !lyrics.instrumental) cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
+            cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
         }
         finally
         {

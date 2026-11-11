@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'build.ps1') -Test
@@ -34,8 +34,8 @@ Requires Windows 10/11, Microsoft .NET Framework 4.8 or 4.8.1, and Spotifast run
 settings.json 保存在 EXE 旁，升级时请保留。许可文本已内置，可在托盘菜单“开源许可”中查看和复制。
 Keep settings.json beside the EXE when upgrading. Embedded license texts can be read and copied via the tray menu: 开源许可 (Open-source licenses).
 
-新增中英文 README，欢迎大家提交 Issue 反馈问题和建议。
-Chinese and English READMEs are available. Bug reports, feature requests, and suggestions are welcome in Issues.
+修复本地歌词晚于首次查询出现时无法及时载入的问题：未找到歌词或联网等待期间每 3 秒检查缓存，防止迟到的网络结果覆盖同步歌词。
+Fix delayed local lyric discovery after a miss or during an online lookup. Check the cache every three seconds and preserve synced lyrics against late network responses.
 "@
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_NOTES.txt'), $notes)
 Write-Output ('Packaged ' + $standalone)
