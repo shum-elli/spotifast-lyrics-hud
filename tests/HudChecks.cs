@@ -288,12 +288,33 @@ static class HudChecks
             track.Cover = "different recording";
             Require(Lookup.ReadLocal(track, root) == null);
             track.Cover = "cover-a";
+            // Radio can leave the saved context pointing at a different playlist.
+            // The same artist can also have different localized display names.
+            metadata.artists[0].name = "歌手中文名";
+            System.IO.File.WriteAllText(rows, json.Serialize(new[] { new PlaylistRow { item = metadata } }));
+            string session = System.IO.Path.Combine(data, "session.json");
+            System.IO.File.WriteAllText(session, json.Serialize(new SavedSession {
+                last_context = "spotify:playlist:0000000000000000000000", last_track = "spotify:track:" + id }));
+            Require(Lookup.ReadLocal(track, root) != null);
+            // A stale saved ID alone never authorizes a localized-name match.
+            System.IO.File.WriteAllText(session, json.Serialize(new SavedSession {
+                last_context = "spotify:playlist:0000000000000000000000", last_track = "spotify:track:0000000000000000000000" }));
+            Require(Lookup.ReadLocal(track, root) == null);
+            System.IO.File.WriteAllText(session, json.Serialize(new SavedSession { last_track = "spotify:track:" + id }));
+            track.Cover = "";
+            Require(Lookup.ReadLocal(track, root) == null);
+            track.Cover = "cover-a";
+            track.Duration++;
+            Require(Lookup.ReadLocal(track, root) == null);
+            track.Duration--;
+            Require(Lookup.ReadLocal(track, root) != null);
             metadata.uri = "spotify:track:another-version";
             System.IO.File.WriteAllText(rows, json.Serialize(new[] { new PlaylistRow { item = metadata } }));
             Require(Lookup.ReadLocal(track, root) == null);
             System.IO.File.WriteAllText(manifest, "{incomplete");
             Require(Lookup.ReadLocal(track, root) == null);
             Console.WriteLine("Cached playlist lyrics load before play history exists; mismatched recordings and incomplete cache are rejected.");
+            Console.WriteLine("Autoplay finds other cached playlists; localized artist names require matching saved ID and full recording metadata.");
         }
         finally
         {

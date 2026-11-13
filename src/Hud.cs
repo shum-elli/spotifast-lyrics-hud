@@ -194,7 +194,7 @@ sealed class Lyrics
 
 sealed class Cache { public Lyrics found { get; set; } }
 sealed class Play { public HistoryTrack track { get; set; } }
-sealed class SavedSession { public string last_context { get; set; } }
+sealed class SavedSession { public string last_context { get; set; } public string last_track { get; set; } }
 sealed class PlaylistManifest { public int version { get; set; } public ulong data_file { get; set; } }
 sealed class PlaylistRow { public HistoryTrack item { get; set; } }
 sealed class HistoryTrack
@@ -433,10 +433,18 @@ static class Lookup
     internal static Lyrics ReadLocal(Track track, string root)
     {
         var history = ReadJson<Play[]>(Path.Combine(root, @"data\history.json"));
-        var matching = MatchTracks(track, (history ?? new Play[0]).Select(p => p.track));
+        var session = ReadJson<SavedSession>(Path.Combine(root, @"data\session.json"));
+        string expectedId = null;
+        const string trackPrefix = "spotify:track:";
+        if (session != null && session.last_track != null && session.last_track.StartsWith(trackPrefix, StringComparison.Ordinal)
+            && TrackId.IsMatch(session.last_track.Substring(trackPrefix.Length)))
+            expectedId = session.last_track.Substring(trackPrefix.Length);
+        var matching = MatchTracks(track, (history ?? new Play[0]).Select(p => p.track), expectedId);
         // New songs enter Spotifast's history only after about 30 seconds.
         // The current playlist already has full metadata; match it just as strictly.
-        if (matching.Count == 0) matching = MatchTracks(track, ReadPlaylistTracks(root));
+        if (matching.Count == 0) matching = MatchTracks(track, ReadPlaylistTracks(root), expectedId);
+        // Radio/autoplay may leave last_context pointing at a playlist without this song.
+        if (matching.Count == 0) matching = MatchTracks(track, ReadPlaylistTracks(root, true), expectedId);
         string cache = Path.Combine(root, @"cache\lyrics");
         var ids = matching.Where(t => t.id != null && TrackId.IsMatch(t.id)
             && t.uri == "spotify:track:" + t.id).Select(t => t.id).Distinct().ToList();
@@ -461,25 +469,28 @@ static class Lookup
         return cached != null && (cached.synced || cached.instrumental) ? cached : plain ?? cached;
     }
 
-    static List<HistoryTrack> MatchTracks(Track track, IEnumerable<HistoryTrack> tracks)
+    static List<HistoryTrack> MatchTracks(Track track, IEnumerable<HistoryTrack> tracks, string expectedId)
     {
         return tracks
             .Where(t => t != null && t.album != null && t.artists != null
                 && t.name == track.Title && t.album.name == track.Album && t.duration_ms == track.Duration
-                && string.Join(", ", t.artists.Select(a => a.name)) == track.Artist
+                && (string.Join(", ", t.artists.Select(a => a.name)) == track.Artist
+                    // Artist names can be localized; only relax this with the saved
+                    // track ID plus exact title, album, duration and nonempty artwork.
+                    || (t.id == expectedId && !string.IsNullOrEmpty(expectedId) && !string.IsNullOrEmpty(track.Cover)))
                 && (string.IsNullOrEmpty(track.Cover)
                     || (t.album.images ?? new Cover[0]).Any(i => i.url == track.Cover)))
             .ToList();
     }
 
-    static IEnumerable<HistoryTrack> ReadPlaylistTracks(string root)
+    static IEnumerable<HistoryTrack> ReadPlaylistTracks(string root, bool all = false)
     {
         var session = ReadJson<SavedSession>(Path.Combine(root, @"data\session.json"));
         const string prefix = "spotify:playlist:";
-        if (session == null || session.last_context == null || !session.last_context.StartsWith(prefix, StringComparison.Ordinal))
+        if (!all && (session == null || session.last_context == null || !session.last_context.StartsWith(prefix, StringComparison.Ordinal)))
             return new HistoryTrack[0];
-        string id = session.last_context.Substring(prefix.Length);
-        if (!TrackId.IsMatch(id)) return new HistoryTrack[0];
+        string id = all ? null : session.last_context.Substring(prefix.Length);
+        if (!all && !TrackId.IsMatch(id)) return new HistoryTrack[0];
         var tracks = new List<HistoryTrack>();
         try
         {
@@ -487,11 +498,18 @@ static class Lookup
             if (!Directory.Exists(playlists)) return tracks;
             foreach (string account in Directory.GetDirectories(playlists))
             {
-                var manifest = ReadJson<PlaylistManifest>(Path.Combine(account, id + ".manifest.json"));
-                if (manifest == null || manifest.version != 2) continue;
-                string file = id + ".rows." + manifest.data_file.ToString("x16", CultureInfo.InvariantCulture);
-                var rows = ReadJson<PlaylistRow[]>(Path.Combine(account, file));
-                if (rows != null) tracks.AddRange(rows.Where(r => r != null).Select(r => r.item));
+                var manifests = all ? Directory.GetFiles(account, "*.manifest.json")
+                    : new[] { Path.Combine(account, id + ".manifest.json") };
+                foreach (string path in manifests)
+                {
+                    string playlistId = Path.GetFileName(path).Replace(".manifest.json", "");
+                    if (!TrackId.IsMatch(playlistId)) continue;
+                    var manifest = ReadJson<PlaylistManifest>(path);
+                    if (manifest == null || manifest.version != 2) continue;
+                    string file = playlistId + ".rows." + manifest.data_file.ToString("x16", CultureInfo.InvariantCulture);
+                    var rows = ReadJson<PlaylistRow[]>(Path.Combine(account, file));
+                    if (rows != null) tracks.AddRange(rows.Where(r => r != null).Select(r => r.item));
+                }
             }
         }
         catch (IOException) { }

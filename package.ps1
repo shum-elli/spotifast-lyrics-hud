@@ -34,8 +34,8 @@ Requires Windows 10/11, Microsoft .NET Framework 4.8 or 4.8.1, and Spotifast run
 settings.json 保存在 EXE 旁，升级时请保留。许可文本已内置，可在托盘菜单“开源许可”中查看和复制。
 Keep settings.json beside the EXE when upgrading. Embedded license texts can be read and copied via the tray menu: 开源许可 (Open-source licenses).
 
-修复新歌已有本地歌词但 HUD 找不到的问题：从当前歌单缓存严格匹配歌曲，无需等待约 30 秒后才写入的播放历史。保留每 3 秒检查缓存及防止网络结果覆盖同步歌词的修正。
-Match first-play tracks from the current cached playlist instead of waiting for the roughly 30-second history threshold. Also includes periodic local cache discovery and protection against stale network results.
+修复自动续播歌曲不在当前歌单缓存，以及歌手中英文名称不同导致本地歌词漏读的问题。扩展到其他已缓存歌单，并用保存的歌曲 ID、歌名、专辑、时长和封面确认名称差异；保留延迟缓存刷新。
+Fix local lyric lookup for autoplay tracks outside the current playlist and localized artist names. Search other cached playlists and accept artist-name differences only with a matching saved track ID and full recording metadata. Includes delayed cache refresh fixes.
 "@
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_NOTES.txt'), $notes)
 Write-Output ('Packaged ' + $standalone)
