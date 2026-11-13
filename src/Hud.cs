@@ -186,6 +186,7 @@ sealed class Segment
 
 sealed class Lyrics
 {
+    internal string CacheSignature;
     public List<Line> lines { get; set; }
     public bool synced { get; set; }
     public bool instrumental { get; set; }
@@ -307,10 +308,12 @@ static class Lookup
         return new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
     }
 
-    public static async Task<Lyrics> Find(Track track, CancellationToken token, IProgress<Lyrics> progress = null)
+    public static async Task<Lyrics> Find(Track track, CancellationToken token, IProgress<Lyrics> progress = null,
+        Func<Track, Lyrics> localReader = null)
     {
-        var available = ReadLocal(track);
-        if (IsTimed(available) || string.IsNullOrWhiteSpace(track.Artist) || track.Duration <= 0) return available;
+        var available = localReader == null ? ReadLocal(track) : localReader(track);
+        // Spotifast's own chosen words take precedence, including plain lyrics.
+        if (available != null || string.IsNullOrWhiteSpace(track.Artist) || track.Duration <= 0) return available;
         if (available == null) available = await FindExact(track, token).ConfigureAwait(false);
         if (available == null || IsTimed(available) || string.IsNullOrWhiteSpace(track.Album)) return available;
 
@@ -439,7 +442,7 @@ static class Lookup
         if (session != null && session.last_track != null && session.last_track.StartsWith(trackPrefix, StringComparison.Ordinal)
             && TrackId.IsMatch(session.last_track.Substring(trackPrefix.Length)))
             expectedId = session.last_track.Substring(trackPrefix.Length);
-        var matching = MatchTracks(track, (history ?? new Play[0]).Select(p => p.track), expectedId);
+        var matching = MatchTracks(track, (history ?? new Play[0]).Where(p => p != null).Select(p => p.track), expectedId);
         // New songs enter Spotifast's history only after about 30 seconds.
         // The current playlist already has full metadata; match it just as strictly.
         if (matching.Count == 0) matching = MatchTracks(track, ReadPlaylistTracks(root), expectedId);
@@ -448,15 +451,10 @@ static class Lookup
         string cache = Path.Combine(root, @"cache\lyrics");
         var ids = matching.Where(t => t.id != null && TrackId.IsMatch(t.id)
             && t.uri == "spotify:track:" + t.id).Select(t => t.id).Distinct().ToList();
-        Lyrics plain = null;
         if (ids.Count == 1)
         {
-            foreach (string prefix in new[] { "spotify-v2-", "spotify-" })
-            {
-                var found = ReadCached(Path.Combine(cache, prefix + ids[0] + ".json"), "Spotifast 缓存 · Spotify");
-                if (found != null && (found.synced || found.instrumental)) return found;
-                plain = plain ?? found;
-            }
+            var found = ReadSpotifyCache(cache, ids[0]);
+            if (found != null) return found;
         }
 
         var artist = matching.Select(t => t.artists.FirstOrDefault()).Where(a => a != null)
@@ -466,7 +464,24 @@ static class Lookup
         using (var sha = SHA1.Create())
             hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").ToLowerInvariant();
         var cached = ReadCached(Path.Combine(cache, hash + ".json"), "Spotifast 缓存 · LRCLIB");
-        return cached != null && (cached.synced || cached.instrumental) ? cached : plain ?? cached;
+        return cached;
+    }
+
+    static Lyrics ReadSpotifyCache(string directory, string id)
+    {
+        string current = Path.Combine(directory, "spotify-v2-" + id + ".json");
+        string legacy = Path.Combine(directory, "spotify-" + id + ".json");
+        var record = ReadJson<Cache>(current);
+        // A fresh v2 negative result overrides the legacy file, as in Spotifast.
+        if (record != null && FreshCache(current)) return CleanCached(record, current, "Spotifast 缓存 · Spotify");
+        var before = ReadCached(legacy, "Spotifast 缓存 · Spotify");
+        if (before != null && FreshCache(legacy)) return before;
+        return CleanCached(record, current, "Spotifast 缓存 · Spotify") ?? before;
+    }
+
+    static bool FreshCache(string path)
+    {
+        return DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < TimeSpan.FromDays(30);
     }
 
     static List<HistoryTrack> MatchTracks(Track track, IEnumerable<HistoryTrack> tracks, string expectedId)
@@ -474,12 +489,13 @@ static class Lookup
         return tracks
             .Where(t => t != null && t.album != null && t.artists != null
                 && t.name == track.Title && t.album.name == track.Album && t.duration_ms == track.Duration
+                && t.artists.All(a => a != null)
                 && (string.Join(", ", t.artists.Select(a => a.name)) == track.Artist
                     // Artist names can be localized; only relax this with the saved
                     // track ID plus exact title, album, duration and nonempty artwork.
                     || (t.id == expectedId && !string.IsNullOrEmpty(expectedId) && !string.IsNullOrEmpty(track.Cover)))
                 && (string.IsNullOrEmpty(track.Cover)
-                    || (t.album.images ?? new Cover[0]).Any(i => i.url == track.Cover)))
+                    || (t.album.images ?? new Cover[0]).Any(i => i != null && i.url == track.Cover)))
             .ToList();
     }
 
@@ -520,13 +536,21 @@ static class Lookup
     static Lyrics ReadCached(string path, string source)
     {
         var record = ReadJson<Cache>(path);
+        return CleanCached(record, path, source);
+    }
+
+    static Lyrics CleanCached(Cache record, string path, string source)
+    {
         var lyrics = record == null ? null : record.found;
         if (lyrics == null || lyrics.lines == null) return null;
+        lyrics.lines = lyrics.lines.Where(l => l != null).ToList();
         if (!lyrics.instrumental && !lyrics.lines.Any(l => !string.IsNullOrWhiteSpace(l.text))) return null;
         lyrics.synced = lyrics.synced && lyrics.lines.All(l => l.at_ms.HasValue);
         if (lyrics.synced) lyrics.lines = lyrics.lines.OrderBy(l => l.at_ms).ToList();
         else lyrics.lines = lyrics.lines.Where(l => !string.IsNullOrWhiteSpace(l.text)).ToList();
         lyrics.Source = source;
+        using (var sha = SHA1.Create())
+            lyrics.CacheSignature = path + ":" + Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(Json().Serialize(lyrics))));
         return lyrics;
     }
 
@@ -992,8 +1016,8 @@ sealed class Hud : Window
 
         save.Tick += (sender, args) => SavePreferences();
         ApplyPreferences();
-        poll.Tick += async (sender, args) => await RefreshTrack();
-        render.Tick += (sender, args) => RenderLyrics();
+        poll.Tick += async (sender, args) => await PollSafely();
+        render.Tick += (sender, args) => RenderSafely();
         Loaded += async (sender, args) =>
         {
             SetupTray();
@@ -1001,7 +1025,7 @@ sealed class Hud : Window
             RenderLyrics();
             poll.Start();
             render.Start();
-            await RefreshTrack();
+            await PollSafely();
         };
         Closed += (sender, args) =>
         {
@@ -1338,6 +1362,7 @@ sealed class Hud : Window
         }
         catch (Exception error)
         {
+            if (!Diagnostics.Recoverable(error)) throw;
             if (!closed && tray != null)
                 tray.ShowBalloonTip(3500, "Spotifast 播放控制", error.Message, System.Windows.Forms.ToolTipIcon.Warning);
         }
@@ -1774,9 +1799,37 @@ sealed class Hud : Window
         }
         if (latest != null && (changed || DateTime.UtcNow >= retryAt))
             await RefreshLyrics(latest);
-        else if (latest != null && NeedsLocalRefresh(lyrics) && DateTime.UtcNow >= cacheCheckAt)
+        else if (latest != null && DateTime.UtcNow >= cacheCheckAt)
             await RefreshCachedTiming(latest);
         RenderLyrics();
+    }
+
+    async Task PollSafely()
+    {
+        try { await RefreshTrack(); }
+        catch (Exception error)
+        {
+            if (!Diagnostics.Recoverable(error)) throw;
+            Diagnostics.Log("playback-refresh", error);
+            retryAt = DateTime.UtcNow.AddSeconds(3);
+            cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
+        }
+    }
+
+    void RenderSafely()
+    {
+        try { RenderLyrics(); }
+        catch (Exception error)
+        {
+            if (!Diagnostics.Recoverable(error)) throw;
+            Diagnostics.Log("lyric-render", error);
+            lyrics = null;
+            imported = null;
+            importedKey = null;
+            displayedLine = null;
+            status = "歌词显示异常，正在重新读取…";
+            retryAt = DateTime.UtcNow.AddSeconds(3);
+        }
     }
 
     async Task RefreshCachedTiming(Track latest)
@@ -1784,8 +1837,12 @@ sealed class Hud : Window
         // Spotifast can write timed lyrics after its panel is opened mid-song.
         var plain = lyrics;
         cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
-        var cached = await Task.Run(() => Lookup.ReadLocal(latest));
-        ApplyCachedLyrics(latest, plain, cached);
+        try
+        {
+            var cached = await Task.Run(() => Lookup.ReadLocal(latest));
+            ApplyCachedLyrics(latest, plain, cached);
+        }
+        catch (Exception error) { if (!Diagnostics.Recoverable(error)) throw; Diagnostics.Log("local-cache-refresh", error); }
     }
 
     internal static bool NeedsLocalRefresh(Lyrics value)
@@ -1796,12 +1853,11 @@ sealed class Hud : Window
     internal bool ApplyCachedLyrics(Track latest, Lyrics previous, Lyrics cached)
     {
         if (closed || track == null || track.Key != latest.Key || lyrics != previous || cached == null) return false;
-        if (previous != null && !cached.synced && !cached.instrumental) return false;
+        if (previous != null && cached.CacheSignature != null && cached.CacheSignature == previous.CacheSignature) return false;
         lyrics = cached;
         status = "";
         if (!NeedsLocalRefresh(cached))
         {
-            cacheCheckAt = DateTime.MaxValue;
             retryAt = DateTime.MaxValue;
         }
         RenderLyrics();
@@ -1820,23 +1876,26 @@ sealed class Hud : Window
         {
             var preview = new Progress<Lyrics>(available =>
             {
-                if (closed || lookup != request || track == null || track.Key != latest.Key || !NeedsLocalRefresh(lyrics)) return;
+                if (closed || lookup != request || track == null || track.Key != latest.Key
+                    || (lyrics != null && (lyrics.CacheSignature != null || !NeedsLocalRefresh(lyrics)))) return;
                 lyrics = available;
-                RenderLyrics();
+                RenderSafely();
             });
             var result = await Task.Run(() => Lookup.Find(latest, request.Token, preview));
             if (closed || request.IsCancellationRequested || lookup != request || track == null || track.Key != latest.Key) return;
             // A late network response must not replace locally discovered synced lyrics.
-            if (!NeedsLocalRefresh(lyrics)) return;
+            if (lyrics != null && (lyrics.CacheSignature != null || !NeedsLocalRefresh(lyrics))) return;
             lyrics = result ?? lyrics;
             status = "没有找到歌词";
             if (lyrics == null) retryAt = DateTime.UtcNow.AddSeconds(20);
-            cacheCheckAt = NeedsLocalRefresh(lyrics) ? DateTime.UtcNow.AddSeconds(3) : DateTime.MaxValue;
+            cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            if (!Diagnostics.Recoverable(error)) throw;
             if (closed || request.IsCancellationRequested || lookup != request || track == null || track.Key != latest.Key
-                || !NeedsLocalRefresh(lyrics)) return;
+                || (lyrics != null && (lyrics.CacheSignature != null || !NeedsLocalRefresh(lyrics)))) return;
+            Diagnostics.Log("lyric-lookup", error);
             status = "暂时无法获取歌词";
             retryAt = DateTime.UtcNow.AddSeconds(20);
             cacheCheckAt = DateTime.UtcNow.AddSeconds(3);
@@ -2010,11 +2069,64 @@ sealed class Hud : Window
     }
 }
 
+static class Diagnostics
+{
+    static readonly object Gate = new object();
+    static string lastError;
+    static DateTime lastAt;
+    internal static bool Recoverable(Exception error)
+    {
+        return !(error is OutOfMemoryException || error is StackOverflowException || error is AccessViolationException
+            || error is ThreadAbortException || error is AppDomainUnloadedException);
+    }
+
+    internal static void Log(string context, Exception error)
+    {
+        try
+        {
+            lock (Gate)
+            {
+                string key = context + ":" + error.GetType().FullName + ":" + error.Message;
+                if (lastError == key && DateTime.UtcNow - lastAt < TimeSpan.FromMinutes(1)) return;
+                lastError = key;
+                lastAt = DateTime.UtcNow;
+                string path = Path.Combine(Path.GetDirectoryName(typeof(Diagnostics).Assembly.Location), "hud-errors.log");
+                if (File.Exists(path) && new FileInfo(path).Length > 512 * 1024)
+                {
+                    File.Copy(path, path + ".previous", true);
+                    File.WriteAllText(path, "");
+                }
+                string detail = error.ToString();
+                if (detail.Length > 16000) detail = detail.Substring(0, 16000);
+                File.AppendAllText(path, DateTime.UtcNow.ToString("o") + " [" + context + "] " + detail + Environment.NewLine);
+            }
+        }
+        catch (Exception) { /* Logging must never terminate the overlay. */ }
+    }
+
+    internal static void Dispatch(Dispatcher dispatcher, Action action)
+    {
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished) return;
+        try
+        {
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                try { action(); }
+                catch (Exception error) { if (!Recoverable(error)) throw; Log("instance-command", error); }
+            }));
+        }
+        catch (InvalidOperationException error) { Log("dispatcher-shutdown", error); }
+    }
+}
+
 static class Program
 {
     [STAThread]
     static int Main(string[] args)
     {
+        AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
+            Diagnostics.Log("unhandled", eventArgs.ExceptionObject as Exception ?? new Exception("Unknown fatal exception"));
+        TaskScheduler.UnobservedTaskException += (sender, eventArgs) => Diagnostics.Log("unobserved-task", eventArgs.Exception);
         if (args.Length == 2 && args[0] == "--check")
         {
             try
@@ -2050,12 +2162,13 @@ static class Program
             }
             var preferences = Preferences.Load();
             var app = new Application();
+            app.DispatcherUnhandledException += (sender, eventArgs) => Diagnostics.Log("dispatcher-unhandled", eventArgs.Exception);
             var hud = new Hud(preferences);
             var listener = ThreadPool.RegisterWaitForSingleObject(showRequest,
-                (state, timedOut) => app.Dispatcher.BeginInvoke(new Action(hud.ShowFromTray)),
+                (state, timedOut) => Diagnostics.Dispatch(app.Dispatcher, hud.ShowFromTray),
                 null, Timeout.Infinite, false);
             var exitListener = ThreadPool.RegisterWaitForSingleObject(quitRequest,
-                (state, timedOut) => app.Dispatcher.BeginInvoke(new Action(hud.Close)),
+                (state, timedOut) => Diagnostics.Dispatch(app.Dispatcher, hud.Close),
                 null, Timeout.Infinite, false);
             try { return app.Run(hud); }
             finally

@@ -32,9 +32,11 @@ The app stays in the system tray. Double-click the icon to show the overlay; rig
 
 ## Lyrics
 
-Reads Spotifast's local lyric cache, matching tracks through play history, the current playlist, and other cached playlists. First plays do not need to wait for Spotifast's roughly 30-second history threshold. Localized artist names are accepted only when the saved track ID, title, album, duration, and artwork match. Tries LRCLIB when synced lyrics are missing. Online lookups send the track title, artist, album, and duration. Cache compatibility depends on the Spotifast version. After a miss or while an online lookup is pending, the local cache is checked every three seconds so newly available synced lyrics load automatically.
+Reads Spotifast's local lyric cache, matching tracks through play history, the current playlist, and other cached playlists. First plays do not need to wait for Spotifast's roughly 30-second history threshold. Localized artist names are accepted only when the saved track ID, title, album, duration, and artwork match. Uses Spotifast cached lyrics first, including plain text. Queries LRCLIB only when no local lyrics exist. Online lookups send the track title, artist, album, and duration. Cache compatibility depends on the Spotifast version. Checks the local cache every three seconds throughout playback, even after online synced lyrics have loaded. New or revised Spotifast lyrics take precedence; unchanged content is not redrawn. A fresh v2 negative cache result overrides the legacy cache, following Spotifast.
 
 Estimated word highlighting uses line timestamps and may differ during sustained notes or pauses. Import Enhanced LRC for actual word timestamps. For plain lyrics, use the arrows or mouse wheel to change lines.
+
+On errors, the app writes `hud-errors.log` beside the EXE, rotating at approximately 512 KB and keeping one backup. Attach this file to an Issue if the app exits unexpectedly.
 
 ## Build
 

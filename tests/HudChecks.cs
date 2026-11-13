@@ -144,6 +144,25 @@ static class HudChecks
         Require(!hud.ApplyCachedLyrics(new Track { Title = "previous song" }, latePlain, delayed));
         Require(!hud.ApplyCachedLyrics(track, null, delayed));
         Require(hud.ApplyCachedLyrics(track, latePlain, delayed));
+        var authoritativePlain = new Lyrics { CacheSignature = "local-revision-1", Source = "Spotifast cache",
+            lines = new List<Line> { new Line { text = "Spotifast 的原始文字" } } };
+        Require(hud.ApplyCachedLyrics(track, delayed, authoritativePlain));
+        var unchanged = new Lyrics { CacheSignature = "local-revision-1", lines = authoritativePlain.lines };
+        Require(!hud.ApplyCachedLyrics(track, authoritativePlain, unchanged));
+        var revised = new Lyrics { CacheSignature = "local-revision-2", synced = true,
+            lines = new List<Line> { new Line { at_ms = 0, text = "Spotifast 更新后的文字" } } };
+        Require(hud.ApplyCachedLyrics(track, authoritativePlain, revised));
+        using (var canceled = new System.Threading.CancellationTokenSource())
+        {
+            canceled.Cancel();
+            Require(ReferenceEquals(Lookup.Find(track, canceled.Token, null, t => authoritativePlain).GetAwaiter().GetResult(), authoritativePlain));
+        }
+        // Corrupt data reaching the renderer must not escape the timer callback.
+        lyricField.SetValue(hud, new Lyrics { synced = true, lines = new List<Line> { null } });
+        typeof(Hud).GetMethod("RenderSafely", access).Invoke(hud, null);
+        Require(lyricField.GetValue(hud) == null);
+        Require(!Diagnostics.Recoverable(new OutOfMemoryException()));
+        Console.WriteLine("Spotifast plain lyrics replace timed fallback; revisions refresh without redraw churn, and malformed render state is contained.");
         Require(!Hud.NeedsLocalRefresh(new Lyrics { instrumental = true }));
         Console.WriteLine("Delayed local lyrics load after a miss or during a pending request; stale results are rejected.");
         typeof(Hud).GetField("lyrics", access).SetValue(hud, new Lyrics
@@ -285,6 +304,20 @@ static class HudChecks
                 Duration = 200000, Cover = "cover-a" };
             var result = Lookup.ReadLocal(track, root);
             Require(result != null && result.synced && result.lines[0].text == "first-play lyrics");
+            string currentCache = System.IO.Path.Combine(cache, "spotify-v2-" + id + ".json");
+            string legacyCache = System.IO.Path.Combine(cache, "spotify-" + id + ".json");
+            string timedJson = System.IO.File.ReadAllText(currentCache);
+            System.IO.File.WriteAllText(legacyCache, timedJson);
+            System.IO.File.WriteAllText(currentCache, json.Serialize(new Cache { found = new Lyrics {
+                lines = new List<Line> { null, new Line { text = "authoritative plain lyrics" } } } }));
+            result = Lookup.ReadLocal(track, root);
+            Require(result != null && !result.synced && result.lines.Count == 1 && result.lines[0].text == "authoritative plain lyrics");
+            System.IO.File.WriteAllText(currentCache, "{\"found\":null}");
+            Require(Lookup.ReadLocal(track, root) == null);
+            System.IO.File.SetLastWriteTimeUtc(currentCache, DateTime.UtcNow.AddDays(-31));
+            Require(Lookup.ReadLocal(track, root) != null);
+            System.IO.File.WriteAllText(currentCache, timedJson);
+            System.IO.File.SetLastWriteTimeUtc(currentCache, DateTime.UtcNow);
             track.Cover = "different recording";
             Require(Lookup.ReadLocal(track, root) == null);
             track.Cover = "cover-a";

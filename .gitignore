@@ -5,3 +5,4 @@
 *.user
 *.suo
 .vs/
+hud-errors.log*
